@@ -1,1 +1,1 @@
-# ml_pipeline_recommendation_system
+# ml-pipeline-recommendation-system
