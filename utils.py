@@ -5,6 +5,8 @@ from datetime import datetime
 from multiprocessing import cpu_count
 from psutil import virtual_memory
 
+import s3fs
+import pyarrow.parquet as pq
 import dask.dataframe as dd
 import boto3
 import luigi
@@ -31,6 +33,14 @@ def write_s3_file(path, content):
     s3.Object(BUCKET, path).put(Body=content)
 
 
+def print_parquet_schema(s3_uri):
+    s3 = s3fs.S3FileSystem()
+    uri = s3_uri + '/part.0.parquet'
+    dataset = pq.ParquetDataset(uri, filesystem=s3)
+    table = dataset.read()
+    print(str(table).split('metadata')[0])
+
+
 class Mario(object):
     """
     Mixin for use with luigi.Task
@@ -48,14 +58,13 @@ class Mario(object):
     def output_dir(self):
         raise NotImplementedError
 
-    def full_output_dir(self):
-        return s3_path(self.output_dir())
+    def full_output_dir(self, subdir=None):
+        if subdir is None:
+            return s3_path(self.output_dir())
+        else:
+            return s3_path(self.output_dir() + '/' + subdir)
 
     def output(self):
-        #         if self.cleanup:
-        #             # TODO: there must be a better way to force cleanup
-        # return S3Target(s3_path(os.path.join(self.output_dir(),
-        # 'NOT_SUCCESS.json')))
         return S3Target(
             s3_path(
                 os.path.join(
@@ -72,8 +81,14 @@ class Mario(object):
     def _run(self):
         raise NotImplementedError
 
-    def load_parquet(self):
-        return dd.read_parquet(s3_path(self.output_dir()))
+    def load_parquet(self, subdir=None):
+        return dd.read_parquet(self.full_output_dir(subdir))
+
+    def save_parquet(self, df, subdir=None):
+        output_path = self.full_output_dir(subdir)
+        df.to_parquet(output_path)
+        print(output_path)
+        print_parquet_schema(output_path)
 
     def run(self):
         self.clean_output()
