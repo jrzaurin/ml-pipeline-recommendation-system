@@ -1,9 +1,12 @@
 import json
 from datetime import timedelta
-import numpy as np
+from random import choices
 
+import pandas as pd
+import numpy as np
 import luigi
 import dask.bag as db
+import dask.dataframe as dd
 
 from utils import Mario
 from x04_train_test_split import TRAIN_SET_REVIEWS_JOB, DEV_SET_REVIEWS_JOB
@@ -180,3 +183,43 @@ class MostPopularReco(Mario, luigi.Task):
         recommendations = users.merge(top_items, on='key')[
             ['reviewerID', 'item', 'rank']]
         self.save_parquet(recommendations.repartition(partition_size='50MB'))
+
+
+class RandomReco(Mario, luigi.Task):
+    """
+    Creates a recommendation of k random items from last month
+    for every user.
+
+    reviewerID: string
+    item: string
+    rank: int64
+    """
+    k = luigi.IntParameter()
+    days = luigi.IntParameter()
+
+    def output_dir(self):
+        return 'baselines/random/k=%s_days=%s' % (self.k, self.days)
+
+    def requires(self):
+        return [ItemPopularity(days=self.days), UserStats(), DevUserStats()]
+
+    def _run(self):
+        item_pop_job, user_stats_job, dev_users_job = self.requires()
+        dev_users = dev_users_job.load_parquet()[['reviewerID']]
+
+        all_items = item_pop_job.load_parquet('stats')[['item']].compute().item
+
+        users = (
+            UserStats().load_parquet()
+            [['reviewerID']]
+            .merge(dev_users, on='reviewerID')
+            .compute()
+            .reviewerID
+        )
+
+        reco = pd.DataFrame({
+            'reviewerID': np.hstack([users] * self.k),
+            'item': choices(all_items, k=len(users) * self.k),
+            'rank': np.hstack([[i] * len(users) for i in range(1, self.k + 1)])
+        })
+        self.save_parquet(dd.from_pandas(reco, chunksize=50000))
