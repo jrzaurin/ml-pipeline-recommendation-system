@@ -6,7 +6,7 @@ import luigi
 import dask.bag as db
 
 from utils import Mario
-from x04_train_test_split import TRAIN_SET_REVIEWS_JOB, DEBUG_SET_REVIEWS_JOB
+from x04_train_test_split import TRAIN_SET_REVIEWS_JOB, DEV_SET_REVIEWS_JOB
 from datetime import datetime
 
 
@@ -122,6 +122,23 @@ class UserStats(Mario, luigi.Task):
         self.save_parquet(final)
 
 
+class DevUserStats(UserStats):
+    """
+    Creates a list of all users in the dev set,
+    calculates number of ratings per use + avg rating - because why not.
+
+    mean_rating: double
+    review_count: int64
+    reviewerID: string
+    """
+
+    def output_dir(self):
+        return 'baselines/dev_user_stats'
+
+    def requires(self):
+        return DEV_SET_REVIEWS_JOB
+
+
 class MostPopularReco(Mario, luigi.Task):
     """
     Creates a recommendation of k most popular items from the last k days
@@ -135,13 +152,15 @@ class MostPopularReco(Mario, luigi.Task):
     days = luigi.IntParameter()
 
     def output_dir(self):
-        return 'baselines/most_popular/%s_%s' % (self.k, self.days)
+        return 'baselines/most_popular/k=%s_days=%s' % (self.k, self.days)
 
     def requires(self):
-        return [ItemPopularity(days=self.days), UserStats()]
+        return [ItemPopularity(days=self.days), UserStats(), DevUserStats()]
 
     def _run(self):
-        item_pop_job, user_stats_job = self.requires()
+        item_pop_job, user_stats_job, dev_users_job = self.requires()
+        dev_users = dev_users_job.load_parquet()[['reviewerID']]
+
         top_items = (
             item_pop_job
             .load_parquet('top_1k')
@@ -150,12 +169,14 @@ class MostPopularReco(Mario, luigi.Task):
         )
         top_items['rank'] = top_items.index + 1
 
-        users = user_stats_job.load_parquet()
-
-        users = UserStats().load_parquet()[['reviewerID']]
+        users = (
+            UserStats().load_parquet()
+            [['reviewerID']]
+            .merge(dev_users, on='reviewerID')
+        )
         users['key'] = 1
         top_items['key'] = 1
 
         recommendations = users.merge(top_items, on='key')[
             ['reviewerID', 'item', 'rank']]
-        self.save_parquet(recommendations)
+        self.save_parquet(recommendations.repartition(partition_size='50MB'))
