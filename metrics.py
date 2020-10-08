@@ -2,13 +2,21 @@ import json
 from datetime import timedelta
 from datetime import datetime
 import numpy as np
+import pandas as pd
 
 import luigi
 import dask.dataframe as dd
 
 from utils import Mario
 from x04_train_test_split import DEV_SET_REVIEWS_JOB
-from baselines import MostPopularReco
+from baselines import MostPopularReco, RandomReco
+
+
+def get_reco_job(reco_name, k):
+    return {
+        'Most Popular': MostPopularReco(days=30, k=k),
+        'Random': RandomReco(days=30, k=k)
+    }[reco_name]
 
 
 def dcg(recs, relevance):
@@ -32,7 +40,9 @@ def dcg(recs, relevance):
     recs['discount_factor'] = recs['rank'].map(lambda x: np.log2(x + 1))
     hits = relevance.merge(recs, on=['item', 'reviewerID'])
     hits['DCG'] = hits.relevance / hits.discount_factor
-    cumulative = hits.groupby('reviewerID').agg({'DCG': 'sum'}).reset_index()
+    hits['hits'] = 1
+    cumulative = hits.groupby('reviewerID').agg(
+        {'DCG': 'sum', 'hits': 'sum'}).reset_index()
     all_reviewers = relevance[['reviewerID']].drop_duplicates()
     result = cumulative.merge(
         all_reviewers,
@@ -57,14 +67,16 @@ def ndcg(recs, relevance, k):
 
     Returns dataframe with columns
     - reviewerID
+    - hits
+    - DCG
     - NDCG
     """
     dcg_df = dcg(recs[recs['rank'] <= k], relevance)
     norm = dcg(relevance[relevance['rank'] <= k], relevance) \
-        .rename(columns={'DCG': 'NORM'})
+        .rename(columns={'DCG': 'NORM'})[['reviewerID', 'NORM']]
     result = dcg_df.merge(norm, on='reviewerID')
     result['NDCG'] = result.DCG / result.NORM
-    return result[['reviewerID', 'NDCG', 'DCG']]
+    return result[['reviewerID', 'NDCG', 'DCG', 'hits']]
 
 
 class ItemRelevance(Mario, luigi.Task):
@@ -122,16 +134,59 @@ class ItemRelevance(Mario, luigi.Task):
 
 
 class EvaluateReco(Mario, luigi.Task):
+    """
+    NDCG: double
+    DCG: double
+    hits: double
+    Reco: string
+    k: int64
+    """
+    reco_name = luigi.Parameter()
+    k = luigi.IntParameter()
+
     def output_dir(self):
-        return 'dev_metrics/eval'
+        return 'dev_metrics/eval/%s/k=%s' % (self.reco_name, self.k)
 
     def requires(self):
-        return [ItemRelevance(), MostPopularReco(days=30, k=10)]
+        return [
+            ItemRelevance(),
+            get_reco_job(self.reco_name, self.k)
+        ]
 
     def _run(self):
         relevance_job, reco_job = self.requires()
         relevance = relevance_job.load_parquet()
         recs = reco_job.load_parquet()
 
-        metrics = ndcg(recs, relevance, 10)
-        print(metrics.mean().compute())
+        metrics = ndcg(recs, relevance, self.k)
+        results = dict(metrics.mean().compute())
+        results['Reco'] = self.reco_name
+        results['k'] = self.k
+        results_pd = pd.DataFrame([results])
+        print(results_pd)
+        results_dd = dd.from_pandas(results_pd, npartitions=1)
+        self.save_parquet(results_dd)
+
+
+class EvalEverything(Mario, luigi.Task):
+    """
+    NDCG: double
+    DCG: double
+    hits: double
+    Reco: string
+    k: int64
+    """
+
+    def output_dir(self):
+        return 'dev_metrics/all_experiments'
+
+    def requires(self):
+        for k in [10, 20, 40]:
+            yield EvaluateReco(reco_name='Most Popular', k=k)
+            yield EvaluateReco(reco_name='Random', k=k)
+
+    def _run(self):
+        experiments = [exp.load_parquet() for exp in self.requires()]
+        all_together = dd.concat(experiments)
+        print(all_together.compute())
+        self.save_parquet(all_together)
