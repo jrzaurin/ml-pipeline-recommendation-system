@@ -79,6 +79,11 @@ class ItemRelevance(Mario, luigi.Task):
     If a user has rated the item multiple times, max rating is used.
     0 relevance user-item pairs are not saved.
 
+    item: string
+    reviewerID: string
+    overall: double
+    relevance: int64
+    rank: int64
     """
 
     def output_dir(self):
@@ -88,28 +93,32 @@ class ItemRelevance(Mario, luigi.Task):
         return DEV_SET_REVIEWS_JOB
 
     def _run(self):
-        relevance = (
+        user_items = (
             self.requires()
             .load_parquet()
             .groupby(['item', 'reviewerID'])
             .agg({'overall': 'max'})
             .reset_index()
         )
-        relevance['relevance'] = relevance.overall.map({
+        user_items['relevance'] = user_items.overall.map({
             1: 1,
             2: 1,
             3: 1,
             4: 2,
             5: 2
         })
-        # there is no rank function in dask, have to move to pandas now
-        rel = relevance.compute()
-        rel['minus_relevance'] = -rel.relevance
-        rel['rank'] = rel.groupby('reviewerID').agg(
-            {'minus_relevance': 'rank'})
 
-        output = rel[['reviewerID', 'item', 'relevance', 'rank']]
-        self.save_parquet(dd.from_pandas(output, npartitions=10))
+        # have to break out of dask here because there is no rank function in
+        # dask
+        user_items_pd = user_items.compute()
+        user_items_pd['rank'] = (
+            user_items_pd
+            .groupby('reviewerID')
+            .relevance
+            .rank(method='first')
+            .astype('int')
+        )
+        self.save_parquet(dd.from_pandas(user_items_pd, npartitions=20))
 
 
 class EvaluateReco(Mario, luigi.Task):
