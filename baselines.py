@@ -9,7 +9,8 @@ import dask.bag as db
 import dask.dataframe as dd
 
 from utils import Mario
-from x04_train_test_split import TRAIN_SET_REVIEWS_JOB, DEV_SET_REVIEWS_JOB
+from x04_train_test_split import TRAIN_SET_REVIEWS_JOB, DEV_SET_REVIEWS_JOB, ONE_YEAR_REVIEWS_JOB
+from x03_parquetify import ParquetifyMetadata
 from datetime import datetime
 
 
@@ -52,11 +53,11 @@ class ItemPopularity(Mario, luigi.Task):
         return TRAIN_SET_REVIEWS_JOB
 
     def _run(self):
-        start_day = np.datetime64(
+        start_day = str(
             self.requires().date_interval.date_b - timedelta(self.days)
         )
         df_full = self.requires().load_parquet()
-        df = df_full[df_full.reviewDate >= start_day]
+        df = df_full[df_full.reviewDate.map(str) >= start_day]
         df['total'] = 1
 
         # need to make it categorical so can pivot table on it
@@ -123,6 +124,13 @@ class UserStats(Mario, luigi.Task):
                 'count': 'review_count',
                 'mean': 'mean_rating'})
         self.save_parquet(final)
+
+
+# TODO: this is hardcoded to cover all of training period - make it not
+# hardcoded
+TRAIN_SET_ITEM_STATS = ItemPopularity(days=1825)
+
+ONE_YEAR_ITEM_STATS = ItemPopularity(days=365)
 
 
 class DevUserStats(UserStats):
@@ -223,3 +231,44 @@ class RandomReco(Mario, luigi.Task):
             'rank': np.hstack([[i] * len(users) for i in range(1, self.k + 1)])
         })
         self.save_parquet(dd.from_pandas(reco, chunksize=50000))
+
+
+class UserFavCat(Mario, luigi.Task):
+    def output_dir(self):
+        return 'baselines/user_fav_cat/1_year'
+
+    def requires(self):
+        return [
+            ParquetifyMetadata(),
+            ONE_YEAR_REVIEWS_JOB
+        ]
+
+    def _run(self):
+        meta_job, reviews_job = self.requires()
+        meta = meta_job.load_parquet()[['item', 'category']]
+        meta['cat_1'] = meta.category.map(lambda x: x[1])
+
+        user_cat_counts = (
+            reviews_job.load_parquet()
+            .merge(meta[['item', 'cat_1']], on='item')
+            [['item', 'reviewerID', 'cat_1']]
+            .groupby(['reviewerID', 'cat_1'])
+            .count()
+            .reset_index()
+            .rename(columns={'item': 'cat_count'})
+        )
+
+        user_cat_counts['max_cat_count'] = (
+            user_cat_counts
+            .groupby(['reviewerID'])
+            ['cat_count'].transform(max, meta='int64')
+        )
+
+        result = (
+            user_cat_counts[user_cat_counts.cat_count == user_cat_counts.max_cat_count]
+            .groupby('reviewerID')
+            .first()
+            .reset_index()
+        )
+
+        self.save_parquet(result[['reviewerID', 'cat_1', 'cat_count']])
