@@ -47,6 +47,20 @@ class SubsetReviews(Mario, luigi.Task):
         filtered.to_parquet(self.full_output_dir())
 
 
+MINI_REVIEWS_JOB = SubsetReviews(
+    date_interval=luigi.date_interval.Custom(
+        date(2018, 3, 25),
+        date(2018, 3, 31)
+    )
+)
+
+ONE_YEAR_REVIEWS_JOB = SubsetReviews(
+    date_interval=luigi.date_interval.Custom(
+        date(2017, 4, 1),
+        date(2018, 3, 31)
+    )
+)
+
 TRAIN_SET_REVIEWS_JOB = SubsetReviews(
     date_interval=luigi.date_interval.Custom(
         date(2013, 4, 1),
