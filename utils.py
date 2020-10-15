@@ -9,12 +9,11 @@ import pathlib
 import shutil
 
 import s3fs
-
 import dask.dataframe as dd
 import boto3
 import luigi
 from luigi.contrib.s3 import S3Target
-
+from pyspark import SparkContext, SQLContext
 
 BUCKET = 'recsys-1'
 RAW_REVIEWS_PATH = 's3://' + BUCKET + '/raw/reviews_split/part-*'
@@ -99,6 +98,16 @@ def print_parquet_schema(s3_uri):
     print(str(table).split('metadata')[0])
 
 
+def s3_uri_2_spark(s3_uri):
+    return 's3a' + s3_uri.lstrip('s3')
+
+
+def start_spark(app_name='Bob'):
+    sc = SparkContext('local', app_name)
+    sql = SQLContext(sc)
+    return sc, sql
+
+
 class Mario(object):
     """
     Mixin for use with luigi.Task
@@ -158,10 +167,17 @@ class Mario(object):
     def _run(self):
         raise NotImplementedError
 
-    def load_parquet(self, subdir=None):
-        return dd.read_parquet(self.full_output_dir(subdir))
+    def load_parquet(self, subdir=None, sqlc=None):
+        """loads parquet output as dask dataframe of as spark dataframe if SQLContext is provided"""
+        if sqlc is None:
+            return dd.read_parquet(self.full_output_dir(subdir))
+        else:
+            return sqlc.read.parquet(
+                s3_uri_2_spark(
+                    self.full_output_dir(subdir)))
 
     def save_parquet(self, df, subdir=None):
+
         output_path = self.full_output_dir(subdir)
         df.to_parquet(output_path)
         print(output_path)
