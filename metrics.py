@@ -9,12 +9,13 @@ import dask.dataframe as dd
 
 from utils import Mario
 from x04_train_test_split import DEV_SET_REVIEWS_JOB
-from baselines import MostPopularReco, RandomReco
+from baselines import MostPopularReco, RandomReco, MostPopularInCatReco
 
 
 def get_reco_job(reco_name, k):
     return {
         'Most Popular': MostPopularReco(days=30, k=k),
+        'Most Popular in Cat': MostPopularInCatReco(days=30, k=k),
         'Random': RandomReco(days=30, k=k)
     }[reco_name]
 
@@ -155,11 +156,11 @@ class EvaluateReco(Mario, luigi.Task):
 
     def _run(self):
         relevance_job, reco_job = self.requires()
-        relevance = relevance_job.load_parquet()
-        recs = reco_job.load_parquet()
+        relevance = relevance_job.load_parquet().compute()
+        recs = reco_job.load_parquet().compute()
 
         metrics = ndcg(recs, relevance, self.k)
-        results = dict(metrics.mean().compute())
+        results = dict(metrics.mean())
         results['Reco'] = self.reco_name
         results['k'] = self.k
         results_pd = pd.DataFrame([results])
@@ -182,8 +183,8 @@ class EvalEverything(Mario, luigi.Task):
 
     def requires(self):
         for k in [10, 20, 40]:
-            yield EvaluateReco(reco_name='Most Popular', k=k)
-            yield EvaluateReco(reco_name='Random', k=k)
+            for name in ['Most Popular', 'Random', 'Most Popular in Cat']:
+                yield EvaluateReco(reco_name=name, k=k)
 
     def _run(self):
         experiments = [exp.load_parquet() for exp in self.requires()]
