@@ -13,6 +13,7 @@ import dask.dataframe as dd
 import boto3
 import luigi
 from luigi.contrib.s3 import S3Target
+import pyspark
 from pyspark import SparkContext, SQLContext
 
 BUCKET = 'recsys-1'
@@ -90,9 +91,31 @@ def download_dir(prefix, local):
         client.download_file(BUCKET, k, dest_pathname)
 
 
-def print_parquet_schema(s3_uri):
+def find_parquet_file(s3_directory):
+    s3 = boto3.resource('s3')
+    bucket = s3.Bucket(BUCKET)
+    # strip the "s3://" bit
+    prefix = s3_directory[len(BUCKET) + 6:]
+    obs = bucket.objects.filter(Prefix=prefix)
+    parquet_file = None
+    for page in obs.pages():
+        if parquet_file is not None:
+            break
+        for line in page:
+            key = line.key
+            if key.endswith('parquet'):
+                parquet_file = key
+                print(parquet_file)
+                break
+    return parquet_file
+
+
+def print_parquet_schema(s3_directory):
+    parquet_file = find_parquet_file(s3_directory)
+    if parquet_file is None:
+        raise ValueError('No parquet file found in %s' % s3_directory)
     s3 = s3fs.S3FileSystem()
-    uri = s3_uri + '/part.0.parquet'
+    uri = 's3://' + BUCKET + '/' + parquet_file
     dataset = pq.ParquetDataset(uri, filesystem=s3)
     table = dataset.read()
     print(str(table).split('metadata')[0])
@@ -102,10 +125,18 @@ def s3_uri_2_spark(s3_uri):
     return 's3a' + s3_uri.lstrip('s3')
 
 
+sc = None
+sqlc = None
+
+
 def start_spark(app_name='Bob'):
+    global sc
+    global sqlc
+    if sc is not None:
+        return sc, sqlc
     sc = SparkContext('local', app_name)
-    sql = SQLContext(sc)
-    return sc, sql
+    sqlc = SQLContext(sc)
+    return sc, sqlc
 
 
 class Mario(object):
@@ -177,9 +208,12 @@ class Mario(object):
                     self.full_output_dir(subdir)))
 
     def save_parquet(self, df, subdir=None):
-
         output_path = self.full_output_dir(subdir)
-        df.to_parquet(output_path)
+        if isinstance(df, pyspark.sql.dataframe.DataFrame):
+            df.write.parquet(s3_uri_2_spark(output_path))
+        else:
+            df.to_parquet(output_path)
+
         print(output_path)
         print_parquet_schema(output_path)
 
