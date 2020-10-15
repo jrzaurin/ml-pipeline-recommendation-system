@@ -8,7 +8,7 @@ import luigi
 import dask.bag as db
 import dask.dataframe as dd
 
-from utils import Mario
+from utils import Mario, start_spark
 from x04_train_test_split import TRAIN_SET_REVIEWS_JOB, DEV_SET_REVIEWS_JOB, ONE_YEAR_REVIEWS_JOB
 from x03_parquetify import ParquetifyMetadata
 from datetime import datetime
@@ -50,13 +50,29 @@ class ItemPopularity(Mario, luigi.Task):
         return 'baselines/item_popularity/%s_days' % self.days
 
     def requires(self):
-        return TRAIN_SET_REVIEWS_JOB
+        return TRAIN_SET_REVIEWS_JOB, ParquetifyMetadata()
 
     def _run(self):
+        # truncate category names longer than this
+        CHAR_LIMIT = 100
+        reviews_job, meta_job = self.requires()
+
+        meta = meta_job.load_parquet()
+        meta['cat_1'] = meta.category.map(lambda x: x[1])
+        meta['cat_2'] = meta.category.map(
+            lambda x: x[2][:CHAR_LIMIT] if len(x) > 2 else '')
+        meta['cat_3'] = meta.category.map(
+            lambda x: x[3][:CHAR_LIMIT] if len(x) > 3 else '')
+        meta['cat_4'] = meta.category.map(
+            lambda x: x[4][:CHAR_LIMIT] if len(x) > 4 else '')
+
+        meta = meta[['item', 'cat_1', 'cat_2', 'cat_3', 'cat_4']
+                    ].groupby('item').first().reset_index()
+
         start_day = str(
-            self.requires().date_interval.date_b - timedelta(self.days)
+            reviews_job.date_interval.date_b - timedelta(self.days)
         )
-        df_full = self.requires().load_parquet()
+        df_full = reviews_job.load_parquet()
         df = df_full[df_full.reviewDate.map(str) >= start_day]
         df['total'] = 1
 
@@ -64,7 +80,7 @@ class ItemPopularity(Mario, luigi.Task):
         df['overall'] = df.overall.astype(
             'int').astype('category').cat.as_known()
 
-        stats = (
+        merged = (
             df.groupby(['item', 'overall'])
             .agg({'total': 'sum'})
             .reset_index()
@@ -72,29 +88,40 @@ class ItemPopularity(Mario, luigi.Task):
             .astype({i: 'int' for i in range(1, 6)})
             .rename(columns={i: 'rating_%s' % i for i in range(1, 6)})
             .reset_index()
+            .merge(meta, on='item', how='left')
+            .compute()
         )
-        stats.columns.name = None
+        merged.fillna('', inplace=True)
 
-        stats['total_reviews'] = (
-            stats.rating_1
-            + stats.rating_2
-            + stats.rating_3
-            + stats.rating_4
-            + stats.rating_5
+        merged['total_reviews'] = (
+            merged.rating_1
+            + merged.rating_2
+            + merged.rating_3
+            + merged.rating_4
+            + merged.rating_5
         )
-        stats['mean_rating'] = (
-            stats.rating_1
-            + 2 * stats.rating_2
-            + 3 * stats.rating_3
-            + 4 * stats.rating_4
-            + 5 * stats.rating_5
-        ) / stats.total_reviews
+        merged['mean_rating'] = (
+            merged.rating_1
+            + 2 * merged.rating_2
+            + 3 * merged.rating_3
+            + 4 * merged.rating_4
+            + 5 * merged.rating_5
+        ) / merged.total_reviews
 
-        self.save_parquet(stats, 'stats')
+        merged = merged.sort_values(
+            'total_reviews',
+            ascending=False).reset_index(
+            drop=True)
+        merged['rank'] = merged.index + 1
+        merged['rank_in_cat_1'] = (
+            merged.groupby('cat_1')['total_reviews'].rank(
+                'dense', ascending=False) + 1).astype('int')
 
-        stats = self.load_parquet('stats')
-        top_1k = stats.nlargest(1000, 'total_reviews').reset_index(drop=True)
-        self.save_parquet(top_1k, 'top_1k')
+        self.save_parquet(
+            dd.from_pandas(
+                merged,
+                npartitions=1).repartition(
+                partition_size='50mb'))
 
 
 class UserStats(Mario, luigi.Task):
@@ -166,25 +193,15 @@ class MostPopularReco(Mario, luigi.Task):
         return 'baselines/most_popular/k=%s_days=%s' % (self.k, self.days)
 
     def requires(self):
-        return [ItemPopularity(days=self.days), UserStats(), DevUserStats()]
+        return [ItemPopularity(days=self.days), DevUserStats()]
 
     def _run(self):
-        item_pop_job, user_stats_job, dev_users_job = self.requires()
-        dev_users = dev_users_job.load_parquet()[['reviewerID']]
+        item_pop_job, dev_users_job = self.requires()
+        users = dev_users_job.load_parquet()[['reviewerID']]
 
-        top_items = (
-            item_pop_job
-            .load_parquet('top_1k')
-            .nlargest(self.k, 'total_reviews')[['item', 'total_reviews']]
-            .compute()
-        )
-        top_items['rank'] = top_items.index + 1
+        items = item_pop_job.load_parquet()
+        top_items = items[items['rank'] <= self.k][['item', 'rank']]
 
-        users = (
-            UserStats().load_parquet()
-            [['reviewerID']]
-            .merge(dev_users, on='reviewerID')
-        )
         users['key'] = 1
         top_items['key'] = 1
 
@@ -209,21 +226,14 @@ class RandomReco(Mario, luigi.Task):
         return 'baselines/random/k=%s_days=%s' % (self.k, self.days)
 
     def requires(self):
-        return [ItemPopularity(days=self.days), UserStats(), DevUserStats()]
+        return [ItemPopularity(days=self.days), DevUserStats()]
 
     def _run(self):
-        item_pop_job, user_stats_job, dev_users_job = self.requires()
-        dev_users = dev_users_job.load_parquet()[['reviewerID']]
+        item_pop_job, dev_users_job = self.requires()
 
-        all_items = item_pop_job.load_parquet('stats')[['item']].compute().item
-
-        users = (
-            UserStats().load_parquet()
-            [['reviewerID']]
-            .merge(dev_users, on='reviewerID')
-            .compute()
-            .reviewerID
-        )
+        users = dev_users_job.load_parquet()[
+            ['reviewerID']].reviewerID.compute()
+        all_items = item_pop_job.load_parquet()[['item']].item.compute()
 
         reco = pd.DataFrame({
             'reviewerID': np.hstack([users] * self.k),
@@ -234,23 +244,30 @@ class RandomReco(Mario, luigi.Task):
 
 
 class UserFavCat(Mario, luigi.Task):
+    """
+    Favourite item category per user based on last year of reviews.
+
+    reviewerID: string
+    cat_1: string
+    cat_count: int6
+    """
+
     def output_dir(self):
         return 'baselines/user_fav_cat/1_year'
 
     def requires(self):
         return [
-            ParquetifyMetadata(),
+            ItemPopularity(days=365),
             ONE_YEAR_REVIEWS_JOB
         ]
 
     def _run(self):
-        meta_job, reviews_job = self.requires()
-        meta = meta_job.load_parquet()[['item', 'category']]
-        meta['cat_1'] = meta.category.map(lambda x: x[1])
+        item_pop_job, reviews_job = self.requires()
+        items = item_pop_job.load_parquet()
 
         user_cat_counts = (
             reviews_job.load_parquet()
-            .merge(meta[['item', 'cat_1']], on='item')
+            .merge(items[['item', 'cat_1']], on='item')
             [['item', 'reviewerID', 'cat_1']]
             .groupby(['reviewerID', 'cat_1'])
             .count()
@@ -271,4 +288,63 @@ class UserFavCat(Mario, luigi.Task):
             .reset_index()
         )
 
-        self.save_parquet(result[['reviewerID', 'cat_1', 'cat_count']])
+        self.save_parquet(result[['reviewerID', 'cat_1', 'cat_count']].repartition(
+            partition_size='20MB'))
+
+
+class MostPopularInCatReco(Mario, luigi.Task):
+    """
+    Creates a recommendation of k most populars items from last month
+    for every user.
+
+    cat_1: string not null
+    reviewerID: string
+    item: string
+    rank: int64
+    """
+    k = luigi.IntParameter()
+    days = luigi.IntParameter()
+
+    def output_dir(self):
+        return 'baselines/most_pop_in_cat/k=%s_days=%s' % (self.k, self.days)
+
+    def requires(self):
+        return UserFavCat(), ItemPopularity(days=self.days), DevUserStats()
+
+    def _run(self):
+        sc, sqlc = start_spark()
+        user_cats_job, items_job, dev_users_job = self.requires()
+        fav_cats = user_cats_job.load_parquet(sqlc=sqlc).filter('cat_1 != ""')
+        test_users = dev_users_job.load_parquet(sqlc=sqlc).select('reviewerID')
+
+        UNKNOWN_CAT = 'UNKNOWN FAVORITE CATEGORY'
+        full_fav_cats = (
+            test_users
+            .join(fav_cats, on='reviewerID', how='left')
+            .selectExpr(
+                'reviewerID',
+                'coalesce(cat_1, "%s") as cat_1' % UNKNOWN_CAT
+            )
+        )
+
+        top_items_overall = (
+            items_job.load_parquet(sqlc=sqlc)
+            .filter('rank <= %s' % self.k)
+            .selectExpr(
+                'item',
+                '"%s" as cat_1' % UNKNOWN_CAT,
+                'rank'
+            )
+        )
+        items_per_cat = (
+            items_job.load_parquet(sqlc=sqlc)
+            .filter('rank_in_cat_1 <= %s' % self.k)
+            .selectExpr(
+                'item',
+                'cat_1',
+                'rank_in_cat_1 as rank'
+            )
+            .unionAll(top_items_overall)
+        )
+        result = full_fav_cats.join(items_per_cat, on='cat_1')
+        self.save_parquet(result)
