@@ -36,20 +36,8 @@ so that that, as new observations/interactions arrive during the before
 mentioned simulation, these are added to the existing dataset. Therefore, we
 need to think carefully of the features we use.
 
-We will retrain 4-5 times, every 10k approx interactions:
-
-```
-				10k					20k					30k					40k					50k
----------------.....-------------- .....---------------.....---------------.....----------------....->
-
-		     | |---| |          | |---| |
-		  retrain retrain      retrain retrain         ....
-		  starts  finishes     starts  finishes
-		  		  model		           model
-		  		  overwrite		       overwrite
-```
-
-The process can be described as follows:
+We will retrain 4-5 times, every 10k approx interactions. The process can be
+described as follows:
 
 1. We will generate a synthetic time step and control the number of iterations
 that call the prediction service (e.g API) per unit time. For example, say we
