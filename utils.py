@@ -7,6 +7,7 @@ from multiprocessing import cpu_count
 from psutil import virtual_memory
 import pathlib
 import shutil
+from pathlib import Path
 
 import s3fs
 import dask.dataframe as dd
@@ -42,7 +43,7 @@ def upload_directory(local_dir, target_dir):
     for root, dirs, files in os.walk(local_dir):
         for path in files:
             full_path = (Path(root) / path)
-            relative_path = full_path.relative_to(directory)
+            relative_path = full_path.relative_to(local_dir)
             target_path = target_dir / relative_path
             client.upload_file(str(full_path), BUCKET, str(target_path))
 
@@ -52,43 +53,24 @@ def download_s3_file(orig_path, local_path):
     client.download_file(BUCKET, orig_path, local_path)
 
 
-def download_dir(prefix, local):
-    """Copies an entire 'directory' from s3 to local
-    https://stackoverflow.com/questions/31918960
-    params:
-    - prefix: pattern to match in s3
-    - local: local path to folder in which to place files
+def download_dir(remote_dir, local_dir):
+    """copies a remote directory onto a local one
     """
+    local_dir = Path(local_dir)
+    if not remote_dir.endswith('/'):
+        remote_dir += '/'
+
+    s3 = boto3.resource('s3')
     client = boto3.client('s3')
-    keys = []
-    dirs = []
-    next_token = ''
-    base_kwargs = {
-        'Bucket': BUCKET,
-        'Prefix': prefix,
-    }
-    while next_token is not None:
-        kwargs = base_kwargs.copy()
-        if next_token != '':
-            kwargs.update({'ContinuationToken': next_token})
-        results = client.list_objects_v2(**kwargs)
-        contents = results.get('Contents')
-        for i in contents:
-            k = i.get('Key')
-            if k[-1] != '/':
-                keys.append(k)
-            else:
-                dirs.append(k)
-        next_token = results.get('NextContinuationToken')
-    for d in dirs:
-        dest_pathname = os.path.join(local, d)
-        if not os.path.exists(os.path.dirname(dest_pathname)):
-            os.makedirs(os.path.dirname(dest_pathname))
-    for k in keys:
-        dest_pathname = os.path.join(local, k)
-        if not os.path.exists(os.path.dirname(dest_pathname)):
-            os.makedirs(os.path.dirname(dest_pathname))
-        client.download_file(BUCKET, k, dest_pathname)
+    bucket = s3.Bucket(BUCKET)
+
+    for page in bucket.objects.filter(Prefix=remote_dir).pages():
+        for f in page:
+            relative_path = f.key[len(remote_dir):]
+            destination = local_dir / relative_path
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            if not os.path.exists(destination):
+                client.download_file(BUCKET, f.key, str(destination))
 
 
 def find_parquet_file(s3_directory):
@@ -158,15 +140,21 @@ class Mario(object):
 
     def local_path(self, file_name=None):
         if file_name is not None:
-            return JOBS_TEMP_DIR / self.output_dir / file_name
+            path = JOBS_TEMP_DIR / self.output_dir() / file_name
         else:
-            return JOBS_TEMP_DIR / self.output_dir()
+            path = JOBS_TEMP_DIR / self.output_dir()
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
 
     def clean_local_dir(self):
         shutil.rmtree(self.local_path(), ignore_errors=True)
 
     def backup_local_dir(self):
-        upload_local_dir(self.local_path(), self.output_dir())
+        upload_directory(self.local_path(), self.output_dir())
+
+    def sync_output_to_local(self):
+        download_dir(self.output_dir(), self.local_path())
 
     def get_local_output(self, file_name):
         path = self.local_path(file_name)
