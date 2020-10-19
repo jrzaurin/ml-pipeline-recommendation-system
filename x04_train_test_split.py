@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import luigi
@@ -79,6 +79,15 @@ TEST_SET_REVIEWS_JOB = SubsetReviews(
         date(2018, 5, 31)
     )
 )
+
+
+def n_days_subset(n):
+    end_date = date(2018, 4, 30)
+    start_date = end_date - timedelta(n - 1)
+    return SubsetReviews(date_interval=luigi.date_interval.Custom(
+        start_date,
+        end_date
+    ))
 
 
 class TrainDevTestSplit(Mario, luigi.Task):
