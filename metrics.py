@@ -8,15 +8,31 @@ import luigi
 import dask.dataframe as dd
 
 from utils import Mario
-from x04_train_test_split import DEV_SET_REVIEWS_JOB
+from x04_train_test_split import FilteredDevSet
 from baselines import MostPopularReco, RandomReco, MostPopularInCatReco
+from biggraph import PBGReco
 
 
 def get_reco_job(reco_name, k):
+    days = 31
     return {
-        'Most Popular': MostPopularReco(days=30, k=k),
-        'Most Popular in Cat': MostPopularInCatReco(days=30, k=k),
-        'Random': RandomReco(days=30, k=k)
+        'Most Popular': MostPopularReco(days=days, k=k),
+        'Most Popular in Cat': MostPopularInCatReco(days=days, k=k),
+        'Random': RandomReco(days=days, k=k),
+        'PBG V01': PBGReco(
+            item_days=days, k=k,
+            epochs=2,
+            dim=100,
+            loss_fn='softmax',
+            # comparator='l2', # this is hardcoded right now as
+            # l2
+            lr=0.1,
+            eval_fraction=0.05,
+            regularization_coef=1e-3,
+            num_negs=1000,
+            days=2,
+            min_user_rev=2
+        )
     }[reco_name]
 
 
@@ -37,7 +53,7 @@ def dcg(recs, relevance):
     - reviewerID
     - DCG
     """
-    recs = recs[['item', 'reviewerID', 'rank']]
+    recs = recs[['item', 'reviewerID', 'rank']].reset_index(drop=True)
     recs['discount_factor'] = recs['rank'].map(lambda x: np.log2(x + 1))
     hits = relevance.merge(recs, on=['item', 'reviewerID'])
     hits['DCG'] = hits.relevance / hits.discount_factor
@@ -103,7 +119,7 @@ class ItemRelevance(Mario, luigi.Task):
         return 'dev_metrics/item_relevance'
 
     def requires(self):
-        return DEV_SET_REVIEWS_JOB
+        return FilteredDevSet()
 
     def _run(self):
         user_items = (
@@ -159,6 +175,12 @@ class EvaluateReco(Mario, luigi.Task):
         relevance = relevance_job.load_parquet().compute()
         recs = reco_job.load_parquet().compute()
 
+        # sanity checks
+        all_users = set(relevance.reviewerID)
+        assert set(recs.reviewerID) == all_users
+        assert set(recs[recs['rank'] == 1].reviewerID) == all_users
+        assert set(recs[recs['rank'] == self.k].reviewerID) == all_users
+
         metrics = ndcg(recs, relevance, self.k)
         results = dict(metrics.mean())
         results['Reco'] = self.reco_name
@@ -182,12 +204,12 @@ class EvalEverything(Mario, luigi.Task):
         return 'dev_metrics/all_experiments'
 
     def requires(self):
+        reco_names = [
+            'Most Popular',
+            'Random',
+            'Most Popular in Cat',
+            'PBG V01'
+        ]
         for k in [10, 20, 40]:
-            for name in ['Most Popular', 'Random', 'Most Popular in Cat']:
+            for name in reco_names:
                 yield EvaluateReco(reco_name=name, k=k)
-
-    def _run(self):
-        experiments = [exp.load_parquet() for exp in self.requires()]
-        all_together = dd.concat(experiments)
-        print(all_together.compute())
-        self.save_parquet(all_together)
