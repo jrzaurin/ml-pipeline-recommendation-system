@@ -9,7 +9,7 @@ import dask.bag as db
 import dask.dataframe as dd
 
 from utils import Mario, start_spark
-from x04_train_test_split import TRAIN_SET_REVIEWS_JOB, DEV_SET_REVIEWS_JOB, ONE_YEAR_REVIEWS_JOB
+from x04_train_test_split import n_days_subset, FilteredDevSet
 from x03_parquetify import ParquetifyMetadata
 from datetime import datetime
 
@@ -19,30 +19,20 @@ class ItemPopularity(Mario, luigi.Task):
     Calculates item popularity statistics for the last n days of the training set.
     Also finds top 1000 most popular items by number of reviews. Saves separately:
 
-    stats
-    -----------------
-    __null_dask_index__: int64
     item: string
     rating_1: int64
     rating_2: int64
     rating_3: int64
     rating_4: int64
     rating_5: int64
+    cat_1: string
+    cat_2: string
+    cat_3: string
+    cat_4: string
     total_reviews: int64
     mean_rating: double
-
-
-    top_1k
-    ------------------
-    __null_dask_index__: int64
-    item: string
-    rating_1: int64
-    rating_2: int64
-    rating_3: int64
-    rating_4: int64
-    rating_5: int64
-    total_reviews: int64
-    mean_rating: double
+    rank: int64
+    rank_in_cat_1: int64
     """
     days = luigi.IntParameter()
 
@@ -50,7 +40,7 @@ class ItemPopularity(Mario, luigi.Task):
         return 'baselines/item_popularity/%s_days' % self.days
 
     def requires(self):
-        return TRAIN_SET_REVIEWS_JOB, ParquetifyMetadata()
+        return n_days_subset(self.days), ParquetifyMetadata()
 
     def _run(self):
         # truncate category names longer than this
@@ -72,8 +62,7 @@ class ItemPopularity(Mario, luigi.Task):
         start_day = str(
             reviews_job.date_interval.date_b - timedelta(self.days)
         )
-        df_full = reviews_job.load_parquet()
-        df = df_full[df_full.reviewDate.map(str) >= start_day]
+        df = reviews_job.load_parquet()
         df['total'] = 1
 
         # need to make it categorical so can pivot table on it
@@ -114,8 +103,13 @@ class ItemPopularity(Mario, luigi.Task):
             drop=True)
         merged['rank'] = merged.index + 1
         merged['rank_in_cat_1'] = (
-            merged.groupby('cat_1')['total_reviews'].rank(
-                'dense', ascending=False) + 1).astype('int')
+            merged
+            .groupby('cat_1')
+            .total_reviews
+            .rank(
+                method='first', ascending=False
+            )
+        ).astype('int')
 
         self.save_parquet(
             dd.from_pandas(
@@ -174,7 +168,7 @@ class DevUserStats(UserStats):
         return 'baselines/dev_user_stats'
 
     def requires(self):
-        return DEV_SET_REVIEWS_JOB
+        return FilteredDevSet()
 
 
 class MostPopularReco(Mario, luigi.Task):
@@ -258,7 +252,7 @@ class UserFavCat(Mario, luigi.Task):
     def requires(self):
         return [
             ItemPopularity(days=365),
-            ONE_YEAR_REVIEWS_JOB
+            n_days_subset(365)
         ]
 
     def _run(self):
