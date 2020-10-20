@@ -206,6 +206,8 @@ class Mario(object):
         print_parquet_schema(output_path)
 
     def run(self):
+        print('RUNNING')
+        print(self)
         self.clean_output()
 
         start = time()
@@ -226,3 +228,6 @@ class Mario(object):
             f.write(json.dumps(run_info))
 
         self.just_finished_running = True
+        print(self)
+        print('DONE')
+        print('Job took %d seconds' % (end - start))
