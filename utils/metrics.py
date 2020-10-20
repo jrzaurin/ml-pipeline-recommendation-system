@@ -2,7 +2,7 @@ import bottleneck as bn
 import numpy as np
 
 
-def ndcg_binary_at_k_batch(X_pred, heldout_batch, k=100):
+def ndcg_binary_at_k_batch(X_pred, heldout_batch, k):
     """
     normalized discounted cumulative gain@k for binary relevance
     ASSUMPTIONS: all the 0's in heldout_data indicate 0 relevance
@@ -14,44 +14,28 @@ def ndcg_binary_at_k_batch(X_pred, heldout_batch, k=100):
     heldout_batch: sparse mtx
         array with shape (batch size, N_items)
     """
-
-    # all this is an efficient np.argsort(-X_pred)[:, :k] for when we have
-    # lots of items
-    batch_users = X_pred.shape[0]
-    idx_topk_part = bn.argpartition(-X_pred, k, axis=1)
-    topk_part = X_pred[np.arange(batch_users)[:, np.newaxis], idx_topk_part[:, :k]]
-    idx_part = np.argsort(-topk_part, axis=1)
-    idx_topk = idx_topk_part[np.arange(batch_users)[:, np.newaxis], idx_part]
-
-    # build the discount template
-    tp = 1.0 / np.log2(np.arange(2, k + 2))
-
-    DCG = (
-        heldout_batch[np.arange(batch_users)[:, np.newaxis], idx_topk].toarray() * tp
+    discount = 1.0 / np.log2(np.arange(2, k + 2))
+    ranking = _efficient_sort(X_pred, k)
+    dcg = (
+        heldout_batch[np.arange(ranking.shape[0])[:, np.newaxis], ranking].toarray()
+        * discount
     ).sum(axis=1)
-    IDCG = np.array([(tp[: min(n, k)]).sum() for n in heldout_batch.getnnz(axis=1)])
-    return DCG[IDCG > 0.0] / IDCG[IDCG > 0.0]
+    idcg = np.array(
+        [(discount[: min(n, k)]).sum() for n in heldout_batch.getnnz(axis=1)]
+    )
+    return dcg[idcg > 0.0] / idcg[idcg > 0.0]
 
 
-def ndcg_score_at_k_batch(X_pred, heldout_batch, k=100):
-    # TO DO: FINISH
-    batch_users = X_pred.shape[0]
-    idx_topk_part = bn.argpartition(-X_pred, k, axis=1)
-    topk_part = X_pred[np.arange(batch_users)[:, np.newaxis], idx_topk_part[:, :k]]
+def _efficient_sort(arr, k):
+    batch_size = arr.shape[0]
+    idx_topk_part = bn.argpartition(-arr, k, axis=1)
+    topk_part = arr[np.arange(batch_size)[:, np.newaxis], idx_topk_part[:, :k]]
     idx_part = np.argsort(-topk_part, axis=1)
-    idx_topk = idx_topk_part[np.arange(batch_users)[:, np.newaxis], idx_part]
-
-    # build the discount template
-    tp = 1.0 / np.log2(np.arange(2, k + 2))
-
-    DCG = (
-        heldout_batch[np.arange(batch_users)[:, np.newaxis], idx_topk].toarray() * tp
-    ).sum(axis=1)
-
-    return DCG
+    idx_topk = idx_topk_part[np.arange(batch_size)[:, np.newaxis], idx_part]
+    return idx_topk
 
 
-def recall_binary_at_k_batch(X_pred, heldout_batch, k=100):
+def recall_binary_at_k_batch(X_pred, heldout_batch, k):
     """
     Recall@k
 
@@ -74,43 +58,46 @@ def recall_binary_at_k_batch(X_pred, heldout_batch, k=100):
     return recall
 
 
-def dcg_scores_at_k(y_true, y_pred, method=1, k=10):
-    """
-    Computes the discounted cumulative gain @ k.
+def ndcg_score_at_k_batch(y_true, y_score, k):
+    dcg = _dcg_sample_scores(y_true, y_score, k, ignore_ties=True)
+    idcg = _dcg_sample_scores(y_true, y_true, k, ignore_ties=True)
+    return dcg[idcg > 0.0] / idcg[idcg > 0.0]
 
-    This function is designed to take dictionarires with the actual and
-    predicted interactions. Is also designed to take the score that the user
-    gave to the item (as opposed as simply consider it a binary problem)
 
-    actual : dict
-        A dict of elements: {'item': score} for the actual interactions
-    predicted : dict
-        A dict of predicted elements {'item': score}
-    k : int, optional
-        The maximum number of predicted elements
-    """
-    # First rank the recommendations based on predicted scores
-    ranked_rec = sorted(
-        [(k, v) for k, v in y_pred.items()], key=lambda x: x[1], reverse=True
-    )
-    # Select those that the user did interact with and their rank
-    ranked_rec = [(i, k) for i, (k, v) in enumerate(ranked_rec) if k in y_true.keys()]
-    # then extract the rank and the relevance (real score) and keep min(len(y_true), k)
-    ranked_scores = [(k, y_true[v]) for k, v in dict(ranked_rec).items()][
-        : min(len(y_true), k)
-    ]
-
-    if not ranked_scores:
-        return 0.0
+def _dcg_sample_scores(y_true, y_score, k, ignore_ties=True):
+    if ignore_ties:
+        discount = 1.0 / np.log2(np.arange(2, k + 2))
+        ranking = _efficient_sort(y_score, k)
+        ranking = np.argsort(y_score)[:, ::-1][:, :k]
+        ranked = y_true[np.arange(ranking.shape[0])[:, np.newaxis], ranking]
+        cumulative_gains = discount.dot(ranked.T)
     else:
-        rank = np.asarray([s[0] for s in ranked_scores])
-        score = np.asarray([s[1] for s in ranked_scores])
-        return np.sum((2 ** score - 1) / np.log2(rank + 1))
+        discount = 1 / (np.log(np.arange(y_true.shape[1]) + 2) / np.log(2))
+        discount[k:] = 0
+        discount_cumsum = np.cumsum(discount)
+        cumulative_gains = [
+            _tie_averaged_dcg(y_t, y_s, discount_cumsum)
+            for y_t, y_s in zip(y_true, y_score)
+        ]
+        cumulative_gains = np.asarray(cumulative_gains)
+    return cumulative_gains
 
 
-def ndcg_scores_at_k(y_true, y_pred, method=1, k=10):
-    return dcg_scores_at_k(y_true, y_pred) / dcg_scores_at_k(y_true, y_true)
+def _tie_averaged_dcg(y_true, y_score, discount_cumsum):
+    _, inv, counts = np.unique(-y_score, return_inverse=True, return_counts=True)
+    ranked = np.zeros(len(counts))
+    np.add.at(ranked, inv, y_true)
+    ranked /= counts
+    groups = np.cumsum(counts) - 1
+    discount_sums = np.empty(len(counts))
+    discount_sums[0] = discount_cumsum[groups[0]]
+    discount_sums[1:] = np.diff(discount_cumsum[groups])
+    return (ranked * discount_sums).sum()
 
 
-def mean_ndcg_scores_at_k(actual, predicted, method=1, k=10):
-    return np.mean([ndcg_scores_at_k(t, p, k) for t, p in zip(actual, predicted)])
+def hit_ratio(X_pred, heldout_batch, k):
+    ranking = _efficient_sort(X_pred, k)
+    hr = heldout_batch[np.arange(ranking.shape[0])[:, np.newaxis], ranking].getnnz(
+        axis=1
+    )
+    return hr
