@@ -5,7 +5,7 @@ import pandas as pd
 import luigi
 import dask.bag as db
 
-from utils import Mario
+from utils import Mario, start_spark
 from x03_parquetify import ParquetifyReviews
 
 
@@ -47,26 +47,25 @@ class SubsetReviews(Mario, luigi.Task):
         filtered.to_parquet(self.full_output_dir())
 
 
-MINI_REVIEWS_JOB = SubsetReviews(
-    date_interval=luigi.date_interval.Custom(
-        date(2018, 3, 25),
-        date(2018, 3, 31)
-    )
-)
+def n_days_subset(n):
+    """training set job limited to the last n days"""
+    end_date = date(2018, 3, 31)
+    start_date = end_date - timedelta(n - 1)
+    return SubsetReviews(date_interval=luigi.date_interval.Custom(
+        start_date,
+        end_date
+    ))
 
-ONE_YEAR_REVIEWS_JOB = SubsetReviews(
-    date_interval=luigi.date_interval.Custom(
-        date(2017, 4, 1),
-        date(2018, 3, 31)
-    )
-)
 
-TRAIN_SET_REVIEWS_JOB = SubsetReviews(
+MINI_REVIEWS_JOB = n_days_subset(2)
+ONE_YEAR_REVIEWS_JOB = n_days_subset(365)
+FULL_TRAIN_SET_REVIEWS_JOB = SubsetReviews(
     date_interval=luigi.date_interval.Custom(
         date(2013, 4, 1),
         date(2018, 3, 31)
     )
 )
+
 DEV_SET_REVIEWS_JOB = SubsetReviews(
     date_interval=luigi.date_interval.Custom(
         date(2018, 4, 1),
@@ -81,24 +80,21 @@ TEST_SET_REVIEWS_JOB = SubsetReviews(
 )
 
 
-def n_days_subset(n):
-    end_date = date(2018, 4, 30)
-    start_date = end_date - timedelta(n - 1)
-    return SubsetReviews(date_interval=luigi.date_interval.Custom(
-        start_date,
-        end_date
-    ))
-
-
-class TrainDevTestSplit(Mario, luigi.Task):
+class FilteredDevSet(Mario, luigi.Task):
     def output_dir(self):
-        return 'junk/train_dev_test_sink/v1'
+        return 'reviews_subset/dev_set_filtered'
 
     def requires(self):
-        return [
-            TRAIN_SET_REVIEWS_JOB,
-            DEV_SET_REVIEWS_JOB,
-            TEST_SET_REVIEWS_JOB]
+        return FULL_TRAIN_SET_REVIEWS_JOB, DEV_SET_REVIEWS_JOB
 
     def _run(self):
-        pass
+        sc, sqlc = start_spark()
+        train_job, dev_job = self.requires()
+        train_set_users = train_job.load_parquet(
+            sqlc=sqlc).select('reviewerID').distinct()
+        dev_set = dev_job.load_parquet(sqlc=sqlc)
+        self.save_parquet(
+            dev_set
+            .join(train_set_users, on='reviewerID')
+            .repartition(100)
+        )
