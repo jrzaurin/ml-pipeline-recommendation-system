@@ -67,7 +67,7 @@ def ndcg_score_at_k_batch(y_true, y_score, k):
 def _dcg_sample_scores(y_true, y_score, k, ignore_ties=True):
     if ignore_ties:
         discount = 1.0 / np.log2(np.arange(2, k + 2))
-        ranking = _efficient_sort(y_score, k)
+        # ranking = _efficient_sort(y_score, k)
         ranking = np.argsort(y_score)[:, ::-1][:, :k]
         ranked = y_true[np.arange(ranking.shape[0])[:, np.newaxis], ranking]
         cumulative_gains = discount.dot(ranked.T)
