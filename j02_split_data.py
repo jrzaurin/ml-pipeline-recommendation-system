@@ -20,14 +20,15 @@ user_counts = user_counts[user_counts >= MIN_REVIEWS_PER_USER].reset_index()
 user_counts.columns = ["reviewerID", "counts"]
 
 recent_reviews = recent_reviews[recent_reviews.reviewerID.isin(user_counts.reviewerID)]
+recent_reviews.sort_values("reviewDate", inplace=True)
 
-train_size = recent_reviews.shape[0] - round(recent_reviews.shape[0] * 0.2)
+train_size = recent_reviews.shape[0] - round(recent_reviews.shape[0] * 0.1)
 train_reviews = recent_reviews.iloc[:train_size]
 test_reviews = recent_reviews.iloc[train_size:]
 
 valid_size = round(test_reviews.shape[0] * 0.5)
 valid_reviews = test_reviews.iloc[:valid_size]
-test_reviews = test_reviews.iloc[:valid_size]
+test_reviews = test_reviews.iloc[valid_size:]
 
 train_reviews.reset_index(drop=True, inplace=True)
 valid_reviews.reset_index(drop=True, inplace=True)

@@ -15,7 +15,7 @@ def ndcg_binary_at_k_batch(X_pred, heldout_batch, k):
         array with shape (batch size, N_items)
     """
     discount = 1.0 / np.log2(np.arange(2, k + 2))
-    ranking = _efficient_sort(X_pred, k)
+    ranking = _efficient_sort(X_pred, 2)
     dcg = (
         heldout_batch[np.arange(ranking.shape[0])[:, np.newaxis], ranking].toarray()
         * discount
