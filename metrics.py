@@ -15,23 +15,69 @@ from biggraph import PBGReco
 
 def get_reco_job(reco_name, k):
     days = 31
+    base_args = dict(
+        item_days=days, 
+        k=k,
+        dim=100,
+        loss_fn='softmax',
+        # comparator='l2', # this is hardcoded right now as
+        # l2
+        lr=0.1,
+        eval_fraction=0.05,
+        regularization_coef=1e-3,
+        num_negs=1000,
+    )
     return {
         'Most Popular': MostPopularReco(days=days, k=k),
         'Most Popular in Cat': MostPopularInCatReco(days=days, k=k),
         'Random': RandomReco(days=days, k=k),
         'PBG V01': PBGReco(
-            item_days=days, k=k,
             epochs=2,
-            dim=100,
-            loss_fn='softmax',
-            # comparator='l2', # this is hardcoded right now as
-            # l2
-            lr=0.1,
-            eval_fraction=0.05,
-            regularization_coef=1e-3,
-            num_negs=1000,
             days=2,
-            min_user_rev=2
+            min_user_rev=2,
+            **base_args
+        ),
+        'PBG V02': PBGReco(
+            epochs=50,
+            days=2,
+            min_user_rev=2,
+            **base_args
+        ),
+        'PBG V03': PBGReco(
+            epochs=50,
+            days=365,
+            min_user_rev=5,
+            **base_args
+        ),
+        'PBG V04': PBGReco(
+            epochs=200,
+            days=365,
+            min_user_rev=5,
+            **base_args
+        ),
+        'PBG V05': PBGReco(
+            epochs=20,
+            days=365,
+            min_user_rev=5,
+            **base_args
+        ),
+        'PBG V06': PBGReco(
+            epochs=50,
+            days=365,
+            min_user_rev=2,
+            **base_args
+        ),
+        'PBG V07': PBGReco(
+            epochs=50,
+            days=365,
+            min_user_rev=1,
+            **base_args
+        ),
+        'PBG V08': PBGReco(
+            epochs=100,
+            days=365,
+            min_user_rev=1,
+            **base_args
         )
     }[reco_name]
 
@@ -208,8 +254,21 @@ class EvalEverything(Mario, luigi.Task):
             'Most Popular',
             'Random',
             'Most Popular in Cat',
-            'PBG V01'
+            'PBG V01',
+            'PBG V02',
+            'PBG V03',
+            'PBG V04',
+            'PBG V05',
+            'PBG V06',
+            'PBG V07',
+            'PBG V08'
         ]
         for k in [10, 20, 40]:
             for name in reco_names:
                 yield EvaluateReco(reco_name=name, k=k)
+
+    def _run(self):
+        experiments = [exp.load_parquet() for exp in self.requires()]
+        all_together = dd.concat(experiments)
+        print(all_together.compute())
+        self.save_parquet(all_together)
