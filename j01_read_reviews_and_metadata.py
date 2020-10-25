@@ -14,8 +14,12 @@ RAW_DATA_DIR = Path("data/raw/amazon")
 if __name__ == "__main__":
 
     df = pd.read_json(RAW_DATA_DIR / "Movies_and_TV.json.gz", lines=True)
-    # feather, parquet...we will decide in due time
     df.to_feather(RAW_DATA_DIR / "Movies_and_TV.f")
+    del df
+    gc.collect()
+
+    df = pd.read_json(RAW_DATA_DIR / "Movies_and_TV_5.json.gz", lines=True)
+    df.to_feather(RAW_DATA_DIR / "Movies_and_TV_5.f")
     del df
     gc.collect()
 
@@ -28,11 +32,5 @@ if __name__ == "__main__":
     # reviews = db.read_text(RAW_DATA_DIR / "Movies_and_TV.json.gz").map(json.loads)
     # df = reviews.map(flatten).to_dataframe()
     # df.to_parquet("raw_data/Movies_and_TV.parquet")
-    # del (reviews, df)
-    # gc.collect()
-
-    # reviews = db.read_text(RAW_DATA_DIR / "meta_Movies_and_TV.json.gz").map(json.loads)
-    # df = reviews.map(flatten).to_dataframe()
-    # df.to_parquet("raw_data/meta_Movies_and_TV.parquet")
     # del (reviews, df)
     # gc.collect()

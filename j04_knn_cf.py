@@ -1,8 +1,6 @@
 import pickle
-from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from time import time
 
 import numpy as np
 import pandas as pd
@@ -13,9 +11,16 @@ PROCESSED_DATA_DIR = Path("data/processed/amazon")
 
 # 1. load train and valid, interactions_mtx and idx dicts
 train = pd.read_feather(PROCESSED_DATA_DIR / "train.f")
+train = train[
+    train.reviewerID.isin(
+        train.reviewerID.value_counts()[
+            train.reviewerID.value_counts() >= 5
+        ].index.tolist()
+    )
+]
 valid = pd.read_feather(PROCESSED_DATA_DIR / "valid.f")
 interactions_mtx_binary = load_npz(PROCESSED_DATA_DIR / "interactions_mtx_binary.npz")
-interactions_mtx_score = load_npz(PROCESSED_DATA_DIR / "interactions_mtx_score.npz")
+# interactions_mtx_score = load_npz(PROCESSED_DATA_DIR / "interactions_mtx_score.npz")
 items_idx = pickle.load(open(PROCESSED_DATA_DIR / "items_idx.p", "rb"))
 users_idx = pickle.load(open(PROCESSED_DATA_DIR / "users_idx.p", "rb"))
 
@@ -37,18 +42,10 @@ valid_hot["user"] = [users_idx[k] for k in valid_hot.reviewerID.tolist()]
 valid_hot["item"] = [items_idx[k] for k in valid_hot.asin.tolist()]
 
 # 5. train knn-item-based-cf
+k = 100
 interactions_mtx_binary_knn = interactions_mtx_binary.T
-# interactions_mtx_score_knn = interactions_mtx_score.T
-
-model1_binary = NearestNeighbors(n_neighbors=10)
-# model1_score = NearestNeighbors(n_neighbors=10)
-model2_binary = NearestNeighbors(algorithm="brute", metric="cosine", n_neighbors=10)
-# model2_score = NearestNeighbors(algorithm="brute", metric="cosine", n_neighbors=10)
-
-model1_binary.fit(interactions_mtx_binary_knn)
-# model1_score.fit(interactions_mtx_score_knn)
-model2_binary.fit(interactions_mtx_binary_knn)
-# model2_score.fit(interactions_mtx_score_knn)
+model = NearestNeighbors(metric="cosine", n_neighbors=5)
+model.fit(interactions_mtx_binary_knn)
 
 
 def recall_binary(rec, true, k):
@@ -74,19 +71,29 @@ def ndgc_binary(rec, true, k):
     return dcg / idcg
 
 
-users_sample = valid_hot.user.sample(100).unique()
-user_groups = train[train.user.isin(users_sample)].groupby("user")
-valid_hot_sample = valid_hot[valid_hot.user.isin(users_sample)]
+def _dcg_score(rec, true, true_score, k):
+    discount = 1.0 / np.log2(np.arange(2, k + 2))
+    rec_item, rec_rank, true_loc = np.intersect1d(rec[:k], true, return_indices=True)
+    true_relevance = true_score[true_loc]
+    discount = discount[rec_rank]
+    dcg = true_relevance * discount
+    return dcg
 
 
-def knn_item_cf(group, model, interactions_mtx, k):
+def ndgc_score(rec, true, true_relevance, k):
+    dcg = _dcg_binary(rec, true, true_relevance, k)
+    idcg = _dcg_binary(true, true, true_relevance, k)
+    return dcg / idcg
+
+
+def knn_item_cf(group):
 
     # given a user seen during training and validation, get her training interactions
     user = group[0]
     movies = group[1].item.values
 
     # compute the k NN
-    dist, nnidx = model.kneighbors(interactions_mtx[movies], n_neighbors=k + 1)
+    dist, nnidx = model.kneighbors(interactions_mtx_binary_knn[movies], n_neighbors=k + 1)
 
     # Drop the 1st result as the closest to a movie is always itself
     dist, nnidx = dist[:, 1:], nnidx[:, 1:]
@@ -98,54 +105,36 @@ def knn_item_cf(group, model, interactions_mtx, k):
     return (user, recs)
 
 
-experiments = [
-    ("model1", model1_binary, interactions_mtx_binary_knn, 20),
-    ("model1", model1_binary, interactions_mtx_binary_knn, 50),
-    ("model1", model1_binary, interactions_mtx_binary_knn, 100),
-    ("model2", model2_binary, interactions_mtx_binary_knn, 20),
-    ("model2", model2_binary, interactions_mtx_binary_knn, 50),
-    ("model2", model2_binary, interactions_mtx_binary_knn, 100),
-]
+users_sample = valid_hot.user.sample(50000).unique()
+user_groups = train[train.user.isin(users_sample)].groupby("user")
+
 
 results: dict = {}
-for name, model, interactions_mtx, k in experiments:
+results['knn_cf'] = {}
+results['most_popular'] = {}
+with Pool(cpu_count()) as p:
+    res = p.map(knn_item_cf, [g for g in user_groups])
 
-    print("INFO: model: {}, k: {}".format(name, k))
+ndgc_knn, rec_knn, hr_knn = [], [], []
+ndgc_mp, rec_mp, hr_mp = [], [], []
+mp_recs = most_popular_items.item.values[:k]
+for recs in res:
+    true = valid_hot[valid_hot.user == recs[0]].item.values
+    knn_recs = recs[1]
 
-    start = time()
-    exp_name = "_".join([name, str(k)])
-    results[exp_name] = {}
+    ndgc_knn.append(ndgc_binary(knn_recs, true, k))
+    rec_knn.append(recall_binary(knn_recs, true, k))
+    hr_knn.append(hit_ratio(knn_recs, true, k))
 
-    with Pool(cpu_count()) as p:
-        res = p.map(
-            partial(knn_item_cf, model=model, interactions_mtx=interactions_mtx, k=k),
-            [g for g in user_groups],
-        )
+    ndgc_mp.append(ndgc_binary(mp_recs, true, k))
+    rec_mp.append(recall_binary(mp_recs, true, k))
+    hr_mp.append(hit_ratio(mp_recs, true, k))
 
-    ndgc_knn, rec_knn, hr_knn = [], [], []
-    ndgc_mp, rec_mp, hr_mp = [], [], []
-    mp_recs = most_popular_items.item.values[:k]
-    for recs in res:
-        true = valid_hot[valid_hot.user == recs[0]].item.values
-        knn_recs = recs[1]
-
-        ndgc_knn.append(ndgc_binary(knn_recs, true, k))
-        rec_knn.append(recall_binary(knn_recs, true, k))
-        hr_knn.append(hit_ratio(knn_recs, true, k))
-
-        ndgc_mp.append(ndgc_binary(mp_recs, true, k))
-        rec_mp.append(recall_binary(mp_recs, true, k))
-        hr_mp.append(hit_ratio(mp_recs, true, k))
-
-    results[exp_name]["ndgc_knn"] = np.mean(ndgc_knn)
-    results[exp_name]["rec_knn"] = np.mean(rec_knn)
-    results[exp_name]["hr_knn"] = np.mean(hr_knn)
-    results[exp_name]["ndgc_mp"] = np.mean(ndgc_mp)
-    results[exp_name]["rec_mp"] = np.mean(rec_mp)
-    results[exp_name]["hr_mp"] = np.mean(hr_mp)
-    end = time() - start
-
-    print("INFO: model: {}, k: {}, running time: {}".format(name, k, end // 60))
-
+results['knn_cf']["ndgc_knn"] = np.mean(ndgc_knn)
+results['knn_cf']["rec_knn"] = np.mean(rec_knn)
+results['knn_cf']["hr_knn"] = np.mean(hr_knn)
+results['most_popular']["ndgc_mp"] = np.mean(ndgc_mp)
+results['most_popular']["rec_mp"] = np.mean(rec_mp)
+results['most_popular']["hr_mp"] = np.mean(hr_mp)
 
 pickle.dump(results, open(PROCESSED_DATA_DIR / "knn_item_cf_results.p", "wb"))

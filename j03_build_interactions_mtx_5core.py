@@ -6,7 +6,8 @@ from scipy.sparse import lil_matrix, save_npz
 
 PROCESSED_DATA_DIR = Path("data/processed/amazon")
 
-train = pd.read_feather(PROCESSED_DATA_DIR / "train.f")
+train = pd.read_feather(PROCESSED_DATA_DIR / "train_5.f")
+
 train = train[
     train.reviewerID.isin(
         train.reviewerID.value_counts()[
@@ -19,6 +20,7 @@ interactions = train[["reviewerID", "asin", "reviewDate", "overall"]]
 interactions["overall"] = interactions.overall.apply(
     lambda x: 1 if x in [1, 2] else 2 if x == 3 else 3
 )
+
 
 users = interactions.reviewerID.unique()
 items = interactions.asin.unique()
@@ -43,7 +45,7 @@ for j, (_, row) in enumerate(interactions.iterrows()):
 interactions_mtx_binary = interactions_mtx_binary.tocsr()
 interactions_mtx_score = interactions_mtx_score.tocsr()
 
-pickle.dump(users_idx, open(PROCESSED_DATA_DIR / "users_idx.p", "wb"))
-pickle.dump(items_idx, open(PROCESSED_DATA_DIR / "items_idx.p", "wb"))
-save_npz(PROCESSED_DATA_DIR / "interactions_mtx_binary.npz", interactions_mtx_binary)
-save_npz(PROCESSED_DATA_DIR / "interactions_mtx_score.npz", interactions_mtx_score)
+pickle.dump(users_idx, open(PROCESSED_DATA_DIR / "users_idx_5.p", "wb"))
+pickle.dump(items_idx, open(PROCESSED_DATA_DIR / "items_idx_5.p", "wb"))
+save_npz(PROCESSED_DATA_DIR / "interactions_mtx_binary_5.npz", interactions_mtx_binary)
+save_npz(PROCESSED_DATA_DIR / "interactions_mtx_score_5.npz", interactions_mtx_score)
