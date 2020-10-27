@@ -10,13 +10,13 @@ import dask.dataframe as dd
 from utils import Mario
 from x04_train_test_split import FilteredDevSet
 from baselines import MostPopularReco, RandomReco, MostPopularInCatReco
-from biggraph import PBGReco
+from biggraph import PBGReco, PBGRecoV2
 
 
 def get_reco_job(reco_name, k):
     days = 31
     base_args = dict(
-        item_days=days, 
+        item_days=days,
         k=k,
         dim=100,
         loss_fn='softmax',
@@ -78,7 +78,150 @@ def get_reco_job(reco_name, k):
             days=365,
             min_user_rev=1,
             **base_args
-        )
+        ),
+        'PBG V2.01': PBGRecoV2(
+            epochs=50,
+            days=365,
+            min_user_rev=5,
+            min_meta_count=10,
+            **base_args
+        ),
+        'PBG V2.02': PBGRecoV2(
+            epochs=50,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+            **base_args
+        ),
+        'PBG V2.03': PBGRecoV2(
+            epochs=100,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+            **base_args
+        ),
+        'PBG V2.04': PBGRecoV2(
+            epochs=25,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+            **base_args
+        ),
+        'PBG V2.00': PBGRecoV2(
+            epochs=3,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+            **base_args
+        ),
+        'PBG V2.05': PBGRecoV2(
+            item_days=days,
+            k=k,
+
+            epochs=50,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+
+            dim=50,
+            loss_fn='softmax',
+            # comparator='l2', # this is hardcoded right now as
+            # l2
+            lr=0.1,
+            eval_fraction=0.05,
+            regularization_coef=1e-3,
+            num_negs=1000,
+        ),
+        'PBG V2.06': PBGRecoV2(
+            item_days=days,
+            k=k,
+
+            epochs=50,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+
+            dim=200,
+            loss_fn='softmax',
+            # comparator='l2', # this is hardcoded right now as
+            # l2
+            lr=0.1,
+            eval_fraction=0.05,
+            regularization_coef=1e-3,
+            num_negs=1000,
+        ),
+        'PBG V2.07': PBGRecoV2(
+            item_days=days,
+            k=k,
+
+            epochs=50,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+
+            dim=100,
+            loss_fn='softmax',
+            # comparator='l2', # this is hardcoded right now as
+            # l2
+            lr=0.1,
+            eval_fraction=0.05,
+            regularization_coef=1e-3,
+            num_negs=100,
+        ),
+        'PBG V2.08': PBGRecoV2(
+            item_days=days,
+            k=k,
+
+            epochs=50,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+
+            dim=100,
+            loss_fn='softmax',
+            # comparator='l2', # this is hardcoded right now as
+            # l2
+            lr=0.01,
+            eval_fraction=0.05,
+            regularization_coef=1e-3,
+            num_negs=1000,
+        ),
+        'PBG V2.09': PBGRecoV2(
+            item_days=days,
+            k=k,
+
+            epochs=50,
+            days=365,
+            min_user_rev=3,
+            min_meta_count=10,
+
+            dim=100,
+            loss_fn='softmax',
+            # comparator='l2', # this is hardcoded right now as
+            # l2
+            lr=0.1,
+            eval_fraction=0.05,
+            regularization_coef=1e-3,
+            num_negs=1000,
+        ),
+        'PBG V2.10': PBGRecoV2(
+            item_days=days,
+            k=k,
+
+            epochs=20,
+            days=365,
+            min_user_rev=1,
+            min_meta_count=10,
+
+            dim=100,
+            loss_fn='softmax',
+            # comparator='l2', # this is hardcoded right now as
+            # l2
+            lr=0.1,
+            eval_fraction=0.05,
+            regularization_coef=1e-3,
+            num_negs=1000,
+        ),
     }[reco_name]
 
 
@@ -261,9 +404,25 @@ class EvalEverything(Mario, luigi.Task):
             'PBG V05',
             'PBG V06',
             'PBG V07',
-            'PBG V08'
+            'PBG V08',
+            'PBG V2.10',
+            'PBG V2.05',
+            'PBG V2.00',
+            'PBG V2.01',
+            'PBG V2.02',
+
+
+            'PBG V2.06',
+            'PBG V2.07',
+            'PBG V2.08',
+            'PBG V2.09',
+            'PBG V2.03',
+            'PBG V2.04',
+            # 'PBG V2.03'
+            # 'PBG V2.04'
         ]
-        for k in [10, 20, 40]:
+        # for k in [10, 20, 40]:
+        for k in [10]:
             for name in reco_names:
                 yield EvaluateReco(reco_name=name, k=k)
 
@@ -272,3 +431,31 @@ class EvalEverything(Mario, luigi.Task):
         all_together = dd.concat(experiments)
         print(all_together.compute())
         self.save_parquet(all_together)
+
+
+def get_reqs(job):
+    reqs = job.requires()
+    if isinstance(reqs, Mario):
+        return [reqs]
+    else:
+        return list(reqs)
+
+
+def what_needs_to_run(job):
+    if job.complete():
+        return None
+
+    for parent in get_reqs(job):
+        what_needs = what_needs_to_run(parent)
+        if what_needs is not None:
+            return what_needs
+    return job
+
+
+def run_everything(job):
+    while what_needs_to_run(job) is not None:
+        what_needs_to_run(job).run()
+
+
+if __name__ == '__main__':
+    run_everything(EvalEverything())
