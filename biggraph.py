@@ -11,10 +11,12 @@ from torchbiggraph.config import parse_config
 from torchbiggraph.converters.importers import TSVEdgelistReader, convert_input_data
 from torchbiggraph.train import train
 from torchbiggraph.util import SubprocessInitializer, setup_logging
+from pyspark.sql.functions import arrays_zip, col, explode
 
-from utils import Mario
+from utils import Mario, start_spark
 from x04_train_test_split import n_days_subset, FilteredDevSet
 from baselines import ItemPopularity, MostPopularInCatReco
+from clean_metadata import OnlyShortMeta
 
 
 class MakeEdgeList(Mario, luigi.Task):
@@ -124,12 +126,12 @@ class PreparePBGInput(Mario, luigi.Task):
 class TrainPBG(Mario, luigi.Task):
     """Trains embeddings. Saves
 
-    "users"
+    users
     embedding: list<item: float>
         child 0, item: float
     reviewerID: string
 
-    "items"
+    items
     embedding: list<item: float>
         child 0, item: float
     item: string
@@ -179,6 +181,11 @@ class TrainPBG(Mario, luigi.Task):
             eval_fraction=self.eval_fraction
         ))
         return config
+    # entity name, subdirectory name, column name
+    entities = [
+        ('user', 'users', 'reviewerID'),
+        ('item', 'items', 'item')
+    ]
 
     def _run(self):
         prep_job = self.requires()
@@ -190,44 +197,29 @@ class TrainPBG(Mario, luigi.Task):
         train(config, subprocess_init=subprocess_init)
         self.backup_local_dir()
 
-        users_path = prep_job.local_path('entity_names_user_0.json')
-        with open(users_path, 'r') as f:
-            users = json.load(f)
+        for entity, output_name, col_name in self.entities:
 
-        user_emb_path = self.get_local_output(
-            'checkpoints/embeddings_user_0.v%d.h5' % self.epochs
-        )
-        with h5py.File(user_emb_path, "r") as hf:
-            user_embeddings = hf["embeddings"][...]
-        user_emb_df = pd.DataFrame({
-            'embedding': list(user_embeddings),
-            'reviewerID': users
-        })
-        self.save_parquet(
-            dd.from_pandas(
-                user_emb_df,
-                npartitions=200),
-            'users')
+            entity_path = prep_job.local_path(
+                'entity_names_%s_0.json' % entity)
+            with open(entity_path, 'r') as f:
+                names = json.load(f)
 
-        items_path = prep_job.local_path('entity_names_item_0.json')
-        with open(items_path, 'r') as f:
-            items = json.load(f)
+            emb_path = self.get_local_output(
+                'checkpoints/embeddings_%s_0.v%d.h5' % (entity, self.epochs)
+            )
+            with h5py.File(emb_path, 'r') as hf:
+                embeddings = hf['embeddings'][...]
 
-        item_emb_path = self.get_local_output(
-            'checkpoints/embeddings_item_0.v%d.h5' % self.epochs
-        )
-        with h5py.File(item_emb_path, "r") as hf:
-            item_embeddings = hf["embeddings"][...]
+            col_name = 'reviewerID' if entity == 'user' else entity
+            emb_df = pd.DataFrame({
+                'embedding': list(embeddings),
+                col_name: names
+            })
 
-        item_emb_df = pd.DataFrame({
-            'embedding': list(item_embeddings),
-            'item': items
-        })
-        self.save_parquet(
-            dd.from_pandas(
-                item_emb_df,
-                npartitions=200),
-            'items')
+            self.save_parquet(
+                dd.from_pandas(emb_df, npartitions=200),
+                output_name
+            )
 
 
 class PBGReco(Mario, luigi.Task):
@@ -339,38 +331,410 @@ class PBGReco(Mario, luigi.Task):
         self.save_parquet(final.repartition(npartitions=200))
 
 
+class MetadataEdges(Mario, luigi.Task):
+    """
+    brand_edges
+    item: string
+    brand: string
+    brand_encoded: int32 not null
+
+    brand_counts
+    brand: string
+    count: int64 not null
+
+
+    cat_edges
+    item: string
+    category: string
+    category_encoded: int32 not null
+
+    cat_counts
+    category: string
+    count: int64 not null
+
+    feat_edges
+    feature: string
+    feature_encoded: int32 not null
+
+    feat_counts
+    feature: string
+    count: int64 not null
+    """
+    days = luigi.IntParameter()
+
+    def output_dir(self):
+        return 'graph/meta_edges/days_%s' % self.days
+
+    def requires(self):
+        return OnlyShortMeta(), n_days_subset(self.days)
+
+    def _run(self):
+        sc, sqlc = start_spark()
+        meta_job, reviews_job = self.requires()
+        reviews = reviews_job.load_parquet(sqlc=sqlc)
+        relevant_items = reviews.select('item').distinct()
+
+        meta = (
+            meta_job
+            .load_parquet(sqlc=sqlc)
+            .join(relevant_items, on='item')
+            .cache()
+        )
+
+        brand_edges = (
+            meta
+            .filter('brand is not null and brand <> ""')
+            .selectExpr(
+                'item',
+                'brand',
+                'hash(brand) as brand_encoded'
+            )
+        )
+        self.save_parquet(brand_edges, 'brand_edges')
+        self.save_parquet(brand_edges.groupBy('brand').count(), 'brand_counts')
+
+        cat_edges = (
+            meta
+            .select(
+                'item',
+                explode('category_fixed').alias('category')
+            )
+            .selectExpr(
+                'item',
+                'category',
+                'hash(category) as category_encoded'
+            )
+        )
+        self.save_parquet(cat_edges, 'cat_edges')
+        self.save_parquet(cat_edges.groupBy('category').count(), 'cat_counts')
+
+        feat_edges = (
+            meta
+            .select(
+                'item',
+                explode('feature_fixed').alias('feature')
+            )
+            .selectExpr(
+                'item',
+                'feature',
+                'hash(feature) as feature_encoded'
+            )
+        )
+        self.save_parquet(feat_edges, 'feat_edges')
+        self.save_parquet(feat_edges.groupBy('feature').count(), 'feat_counts')
+
+
+class MakeEdgeListV2(Mario, luigi.Task):
+    """
+    saves edges.tsv - edge list for the interactions graph
+    and a dataframe of all users under
+    'users'
+    """
+    days = luigi.IntParameter()
+    min_user_rev = luigi.IntParameter()
+    min_meta_count = luigi.IntParameter()
+
+    def output_dir(self):
+        return 'graph/edge_list_v2/days_%s_min_rev_%s_min_meta_%s' % (
+            self.days, self.min_user_rev, self.min_meta_count)
+
+    def requires(self):
+        return n_days_subset(self.days), MetadataEdges(days=self.days)
+
+    def _run(self):
+        reviews_job, meta_job = self.requires()
+        reviews = reviews_job.load_parquet()[
+            ['reviewerID', 'item']]
+        review_counts = reviews.groupby('reviewerID').count().reset_index()
+        users_subset = review_counts[review_counts.item >= self.min_user_rev][
+            ['reviewerID']]
+
+        # self.save_parquet(users_subset, 'users')
+
+        reviews1 = reviews.merge(users_subset, on='reviewerID').compute()
+        print('\n\nfound %s edges matching criteria\n\n' % len(reviews1))
+
+        graph_path = self.local_path('edges.tsv')
+        with open(graph_path, 'w') as f:
+            for reviewer, item in zip(reviews1.reviewerID, reviews1.item):
+                f.write(reviewer + '\treviewed\t' + item + '\n')
+
+            del reviews1
+
+            brands = meta_job.load_parquet('brand_counts')
+            good_brands = brands[brands['count'] >= self.min_meta_count]
+
+            brand_edges = (
+                meta_job.load_parquet('brand_edges')
+                .merge(good_brands, on='brand')
+                [['item', 'brand_encoded']]
+                .compute()
+            )
+            i = 100
+            for item, brand in zip(
+                    brand_edges.item, brand_edges.brand_encoded):
+                i -= 1
+                if i == 0:
+                    break
+                f.write(item + '\thas_brand\t' + str(brand) + '\n')
+
+            cats = meta_job.load_parquet('cat_counts')
+            good_cats = cats[cats['count'] >= self.min_meta_count]
+
+            cat_edges = (
+                meta_job.load_parquet('cat_edges')
+                .merge(good_cats, on='category')
+                [['item', 'category_encoded']]
+                .compute()
+            )
+            i = 100
+            for item, cat in zip(cat_edges.item, cat_edges.category_encoded):
+                i -= 1
+                if i == 0:
+                    break
+                f.write(item + '\thas_category\t' + str(cat) + '\n')
+
+            feats = meta_job.load_parquet('feat_counts')
+            good_feats = feats[feats['count'] >= self.min_meta_count]
+
+            feat_edges = (
+                meta_job.load_parquet('feat_edges')
+                .merge(good_feats, on='feature')
+                [['item', 'feature_encoded']]
+                .compute()
+            )
+            i = 100
+            for item, feat in zip(feat_edges.item, feat_edges.feature_encoded):
+                i -= 1
+                if i == 0:
+                    break
+                f.write(item + '\thas_feature\t' + str(feat) + '\n')
+
+        self.backup_local_dir()
+
+
+class PreparePBGInputV2(PreparePBGInput):
+    days = luigi.IntParameter()
+    min_user_rev = luigi.IntParameter()
+    min_meta_count = luigi.IntParameter()
+
+    def pbg_config(self):
+        config = super().pbg_config()
+        config.update(dict(
+            entities={
+                "user": {"num_partitions": 1},
+                "item": {"num_partitions": 1},
+                "brand": {"num_partitions": 1},
+                "category": {"num_partitions": 1},
+                "feature": {"num_partitions": 1}
+            },
+            relations=[
+                {
+                    "name": "reviewed",
+                    "lhs": "user",
+                    "rhs": "item",
+                    "operator": "none",
+                },
+                {
+                    "name": "has_brand",
+                    "lhs": "item",
+                    "rhs": "brand",
+                    "operator": "diagonal",
+                },
+                {
+                    "name": "has_category",
+                    "lhs": "item",
+                    "rhs": "category",
+                    "operator": "diagonal",
+                },
+                {
+                    "name": "has_feature",
+                    "lhs": "item",
+                    "rhs": "feature",
+                    "operator": "diagonal",
+                },
+            ],
+        ))
+        return config
+
+    def output_dir(self):
+        return 'graph/pbg_input/days_%s_min_rev_%s_min_meta_%s' % (
+            self.days, self.min_user_rev, self.min_meta_count)
+
+    def requires(self):
+        return MakeEdgeListV2(
+            days=self.days,
+            min_user_rev=self.min_user_rev,
+            min_meta_count=self.min_meta_count)
+
+
+class TrainPBGV2(TrainPBG):
+    """Trains embeddings. Saves
+
+    users
+    embedding: list<item: float>
+    child 0, item: float
+    reviewerID: string
+
+    items
+    embedding: list<item: float>
+        child 0, item: float
+    item: string
+
+    brands
+    embedding: list<item: float>
+        child 0, item: float
+    brand: string
+
+    categories
+    embedding: list<item: float>
+        child 0, item: float
+    category: string
+
+    features
+    embedding: list<item: float>
+        child 0, item: float
+    feature: string
+    """
+    min_meta_count = luigi.IntParameter()
+
+    def output_dir(self):
+        return 'graph/train_pbg_v2/days_{DAYS}_min_rev_{MIN_REV}_min_meta_{MIN_META}/' \
+            '{DIM}_{LOSS_FN}_{COMPARATOR}_{LR}_{REG_COEF}_{NUM_NEGS}_' \
+            '{EVAL_FR}_{EPOCHS}'.format(
+                DIM=self.dim,
+                LOSS_FN=self.loss_fn,
+                COMPARATOR=self.comparator,
+                LR=self.lr,
+                REG_COEF=self.regularization_coef,
+                EVAL_FR=self.eval_fraction,
+                EPOCHS=self.epochs,
+                NUM_NEGS=self.num_negs,
+                DAYS=self.days,
+                MIN_REV=self.min_user_rev,
+                MIN_META=self.min_meta_count
+            )
+
+    def requires(self):
+        return PreparePBGInputV2(
+            days=self.days,
+            min_user_rev=self.min_user_rev,
+            min_meta_count=self.min_meta_count)
+
+    # entity name, subdirectory name, column name
+    entities = [
+        ('user', 'users', 'reviewerID'),
+        ('item', 'items', 'item'),
+        ('brand', 'brands', 'brand'),
+        ('category', 'categories', 'category'),
+        ('feature', 'features', 'feature')
+    ]
+
+
+class PBGRecoV2(PBGReco):
+    min_meta_count = luigi.IntParameter()
+
+    def output_dir(self):
+        return 'graph/pbg_reco_v2/days_{DAYS}_min_rev_{MIN_REV}_min_meta_{MIN_META}/' \
+            '{DIM}_{LOSS_FN}_{COMPARATOR}_{LR}_{REG_COEF}_{NUM_NEGS}_' \
+            '{EVAL_FR}_{EPOCHS}/k={K}'.format(
+                DIM=self.dim,
+                LOSS_FN=self.loss_fn,
+                COMPARATOR=self.comparator,
+                LR=self.lr,
+                REG_COEF=self.regularization_coef,
+                EVAL_FR=self.eval_fraction,
+                EPOCHS=self.epochs,
+                NUM_NEGS=self.num_negs,
+                DAYS=self.days,
+                MIN_REV=self.min_user_rev,
+                MIN_META=self.min_meta_count,
+                K=self.k
+            )
+
+    def requires(self):
+        return [
+            TrainPBGV2(
+                epochs=self.epochs,
+                dim=self.dim,
+                loss_fn=self.loss_fn,
+                comparator=self.comparator,
+                lr=self.lr,
+                eval_fraction=self.eval_fraction,
+                regularization_coef=self.regularization_coef,
+                num_negs=self.num_negs,
+                days=self.days,
+                min_user_rev=self.min_user_rev,
+                min_meta_count=self.min_meta_count
+            ),
+            FilteredDevSet(),
+            ItemPopularity(days=self.item_days),
+            MostPopularInCatReco(days=self.item_days, k=self.k)
+        ]
+
+
 class Sink(Mario, luigi.Task):
     def output_dir(self):
         return 'graph/sink'
 
     def requires(self):
         return [
-            TrainPBG(
-                epochs=2,
-                dim=100,
-                loss_fn='softmax',
-                comparator='l2',
-                lr=0.1,
-                eval_fraction=0.05,
-                regularization_coef=1e-3,
-                num_negs=1000,
+            MakeEdgeListV2(
                 days=2,
-                # k=10,
-                min_user_rev=2
-            ),
-            PBGReco(
-                epochs=2,
-                dim=100,
-                loss_fn='softmax',
-                # comparator='l2',
-                lr=0.1,
-                eval_fraction=0.05,
-                regularization_coef=1e-3,
-                num_negs=1000,
-                days=2,
-                # k=10,
                 min_user_rev=2,
-                item_days=31,
-                k=10
+                min_meta_count=20
+            ),
+            TrainPBGV2(
+                days=2,
+                min_user_rev=2,
+                min_meta_count=20,
+                num_negs=100,
+                epochs=2,
+                eval_fraction=0.05,
+                regularization_coef=0.001,
+                lr=0.1,
+                comparator='l2',
+                dim=4,
+                loss_fn='softmax'
+            ),
+            TrainPBG(
+                days=2,
+                min_user_rev=2,
+                num_negs=100,
+                epochs=2,
+                eval_fraction=0.05,
+                regularization_coef=0.001,
+                lr=0.1,
+                comparator='l2',
+                dim=4,
+                loss_fn='softmax'
+            ),
+            TrainPBGV2(
+                days=2,
+                min_user_rev=2,
+                min_meta_count=20,
+                num_negs=100,
+                epochs=3,
+                eval_fraction=0.05,
+                regularization_coef=0.001,
+                lr=0.1,
+                comparator='l2',
+                dim=4,
+                loss_fn='softmax'
+            ),
+            PBGRecoV2(
+                days=2,
+                min_user_rev=2,
+                min_meta_count=20,
+                num_negs=100,
+                epochs=3,
+                eval_fraction=0.05,
+                regularization_coef=0.001,
+                lr=0.1,
+                # comparator='l2',
+                dim=4,
+                loss_fn='softmax',
+                k=10,
+                item_days=2
             )
         ]
