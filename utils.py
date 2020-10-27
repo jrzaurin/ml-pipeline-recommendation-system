@@ -186,14 +186,23 @@ class Mario(object):
     def _run(self):
         raise NotImplementedError
 
-    def load_parquet(self, subdir=None, sqlc=None):
+    def load_parquet(self, subdir=None, sqlc=None, from_local=False):
         """loads parquet output as dask dataframe of as spark dataframe if SQLContext is provided"""
-        if sqlc is None:
-            return dd.read_parquet(self.full_output_dir(subdir))
+        if from_local:
+            output_dir = str(self.local_path(subdir))
+            print('local')
         else:
-            return sqlc.read.parquet(
-                s3_uri_2_spark(
-                    self.full_output_dir(subdir)))
+            output_dir = self.full_output_dir(subdir)
+            print('nonlocal')
+
+        print('output_dir = ', output_dir)
+        if sqlc is None:
+            return dd.read_parquet(output_dir)
+        else:
+            if from_local:
+                return sqlc.read.parquet(output_dir)
+            else:
+                return sqlc.read.parquet(s3_uri_2_spark(output_dir))
 
     def save_parquet(self, df, subdir=None):
         output_path = self.full_output_dir(subdir)
