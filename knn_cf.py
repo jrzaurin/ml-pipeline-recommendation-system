@@ -1,3 +1,4 @@
+import os
 import pickle
 from functools import partial
 from multiprocessing import Pool, cpu_count
@@ -12,6 +13,7 @@ from sklearn.neighbors import NearestNeighbors
 from metrics import hit_ratio, ndgc_binary, recall_binary
 
 PROCESSED_DATA_DIR = Path("data/processed/amazon")
+RESULTS_DIR = Path("results")
 
 
 def knn_item_cf_recs(group, model, interactions_mtx, k):
@@ -39,8 +41,11 @@ def run_experiments(
     sample=None,
 ):
 
+    if not os.path.exists(RESULTS_DIR):
+        os.makedirs(RESULTS_DIR)
+
     results_fname = "_".join(
-        ["knn_item_cf_results", dataset, str(min_reviews_per_user) + ".p"]
+        ["knn_item_cf_results", dataset, str(min_reviews_per_user), "k", str(k) + ".p"]
     )
 
     train = pd.read_feather(PROCESSED_DATA_DIR / "_".join(["train", dataset + ".f"]))
@@ -70,13 +75,13 @@ def run_experiments(
                 train.reviewerID.value_counts() >= min_reviews_per_user
             ].index.tolist()
         )
-    ]
+    ].reset_index(drop=True)
 
     # when using knn-cf, we can only recommend to users and items seen in
     # training, so filter accordingly
     valid_hot = valid[
         (valid.asin.isin(train.asin)) & (valid.reviewerID.isin(train.reviewerID))
-    ]
+    ].reset_index(drop=True)
 
     # extract most popular items
     most_popular_items = train.asin.value_counts().reset_index()
@@ -97,11 +102,13 @@ def run_experiments(
     model.fit(interactions_mtx_knn)
 
     if sample is not None:
-        users_sample = valid_hot.user.sample(sample).unique()
-        user_groups = train[train.user.isin(users_sample)].groupby("user")
+        valid_users_sample = valid_hot.user.sample(sample).unique()
+        user_groups = train[train.user.isin(valid_users_sample)].groupby("user")
     else:
-        user_groups = train.groupby("user")
+        valid_users = valid_hot.user.unique()
+        user_groups = train[train.user.isin(valid_users)].groupby("user")
 
+    print("number of users used for this experiment: {}.".format(len(user_groups)))
     print("running knn cf...")
     start = time()
     with Pool(cpu_count()) as p:
@@ -143,12 +150,27 @@ def run_experiments(
     results["most_popular"]["rec_mp"] = np.mean(rec_mp)
     results["most_popular"]["hr_mp"] = np.mean(hr_mp)
 
-    pickle.dump(results, open(PROCESSED_DATA_DIR / results_fname, "wb"))
+    pickle.dump(results, open(RESULTS_DIR / results_fname, "wb"))
 
 
 if __name__ == "__main__":
 
-    run_experiments(dataset="full", min_reviews_per_user=5, sample=1000)
-    run_experiments(dataset="full", min_reviews_per_user=7, sample=1000)
-    run_experiments(dataset="5core", min_reviews_per_user=5, sample=1000)
-    run_experiments(dataset="5core", min_reviews_per_user=7, sample=1000)
+    run_experiments(dataset="full", min_reviews_per_user=3, k=20)
+    run_experiments(dataset="full", min_reviews_per_user=3, k=50)
+    run_experiments(dataset="full", min_reviews_per_user=3, k=100)
+    run_experiments(dataset="full", min_reviews_per_user=5, k=20)
+    run_experiments(dataset="full", min_reviews_per_user=5, k=50)
+    run_experiments(dataset="full", min_reviews_per_user=5, k=100)
+    run_experiments(dataset="full", min_reviews_per_user=7, k=20)
+    run_experiments(dataset="full", min_reviews_per_user=7, k=50)
+    run_experiments(dataset="full", min_reviews_per_user=7, k=100)
+
+    run_experiments(dataset="5core", min_reviews_per_user=3, k=20)
+    run_experiments(dataset="5core", min_reviews_per_user=3, k=50)
+    run_experiments(dataset="5core", min_reviews_per_user=3, k=100)
+    run_experiments(dataset="5core", min_reviews_per_user=5, k=20)
+    run_experiments(dataset="5core", min_reviews_per_user=5, k=50)
+    run_experiments(dataset="5core", min_reviews_per_user=5, k=100)
+    run_experiments(dataset="5core", min_reviews_per_user=7, k=20)
+    run_experiments(dataset="5core", min_reviews_per_user=7, k=50)
+    run_experiments(dataset="5core", min_reviews_per_user=7, k=100)

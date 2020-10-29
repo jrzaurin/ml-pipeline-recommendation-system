@@ -56,10 +56,12 @@ if __name__ == '__main__':
 
     print("INFO: building interactions matrix for the full dataset...")
     train = pd.read_feather(PROCESSED_DATA_DIR / 'train_full.f')
-    built_interaction_mtx(train, dataset="full", min_reviews_per_user=5)
-    built_interaction_mtx(train, dataset="full", min_reviews_per_user=7)
+    built_interaction_mtx(train, dataset="full", min_reviews_per_user=3)
+    # built_interaction_mtx(train, dataset="full", min_reviews_per_user=5)
+    # built_interaction_mtx(train, dataset="full", min_reviews_per_user=7)
 
     print("INFO: building interactions matrix for the 5 score dataset...")
     train = pd.read_feather(PROCESSED_DATA_DIR / 'train_5core.f')
-    built_interaction_mtx(train, dataset="5core", min_reviews_per_user=5)
-    built_interaction_mtx(train, dataset="5core", min_reviews_per_user=7)
+    built_interaction_mtx(train, dataset="5core", min_reviews_per_user=3)
+    # built_interaction_mtx(train, dataset="5core", min_reviews_per_user=5)
+    # built_interaction_mtx(train, dataset="5core", min_reviews_per_user=7)
