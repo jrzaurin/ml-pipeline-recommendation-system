@@ -190,12 +190,10 @@ class Mario(object):
         """loads parquet output as dask dataframe of as spark dataframe if SQLContext is provided"""
         if from_local:
             output_dir = str(self.local_path(subdir))
-            print('local')
         else:
             output_dir = self.full_output_dir(subdir)
-            print('nonlocal')
 
-        print('output_dir = ', output_dir)
+        print('loading output from ', output_dir)
         if sqlc is None:
             return dd.read_parquet(output_dir)
         else:
