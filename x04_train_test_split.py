@@ -81,6 +81,20 @@ TEST_SET_REVIEWS_JOB = SubsetReviews(
 
 
 class FilteredDevSet(Mario, luigi.Task):
+    """
+    reviewerID: string
+    overall: double
+    vote: string
+    verified: bool
+    item: string
+    style: list<element: list<element: string>>
+    child 0, element: list<element: string>
+        child 0, element: string
+    reviewerName: string
+    reviewText: string
+    summary: string
+    reviewDate: date32[day]
+    """
     def output_dir(self):
         return 'reviews_subset/dev_set_filtered'
 
