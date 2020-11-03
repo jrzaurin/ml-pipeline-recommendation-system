@@ -82,6 +82,8 @@ TEST_SET_REVIEWS_JOB = SubsetReviews(
 
 class FilteredDevSet(Mario, luigi.Task):
     """
+    Dev set limited to users who also appeared in the training set
+
     reviewerID: string
     overall: double
     vote: string
@@ -95,6 +97,7 @@ class FilteredDevSet(Mario, luigi.Task):
     summary: string
     reviewDate: date32[day]
     """
+
     def output_dir(self):
         return 'reviews_subset/dev_set_filtered'
 
@@ -112,3 +115,46 @@ class FilteredDevSet(Mario, luigi.Task):
             .join(train_set_users, on='reviewerID')
             .repartition(100)
         )
+
+
+class SubsetUsers(Mario, luigi.Task):
+    date_interval = luigi.DateIntervalParameter()
+
+    def requires(self):
+        return SubsetReviews(date_interval=self.date_interval)
+
+    def output_dir(self):
+        return 'users_subset/%s' % self.date_interval
+
+    def _run(self):
+        start = self.date_interval.date_a
+        end = self.date_interval.date_b
+
+        df = self.requires().load_parquet()
+        cond1 = df.reviewDate.map(
+            lambda x: x >= start, meta=pd.Series(
+                [], dtype=bool))
+        cond2 = df.reviewDate.map(
+            lambda x: x <= end, meta=pd.Series(
+                [], dtype=bool))
+        filtered = df[cond1 & cond2]
+        filtered.to_parquet(self.full_output_dir())
+
+
+def n_days_users(n):
+    """training set job limited to the last n days"""
+    end_date = date(2018, 3, 31)
+    start_date = end_date - timedelta(n - 1)
+    return SubsetUsers(date_interval=luigi.date_interval.Custom(
+        start_date,
+        end_date
+    ))
+
+
+ONE_YEAR_USERS_JOB = n_days_users(365)
+FULL_TRAIN_USERS_JOB = SubsetUsers(
+    date_interval=luigi.date_interval.Custom(
+        date(2013, 4, 1),
+        date(2018, 3, 31)
+    )
+)
