@@ -15,6 +15,7 @@ from baselines import MostPopularReco, RandomReco, MostPopularInCatReco, ItemPop
 from x04_train_test_split import ONE_YEAR_REVIEWS_JOB, DEV_SET_REVIEWS_JOB
 from x04_train_test_split import FULL_TRAIN_USERS_JOB
 from biggraph import PBGReco, PBGRecoV2
+from train_set import ItemRelevance
 
 
 def get_reco_job(reco_name, k):
@@ -363,7 +364,7 @@ class ItemsToScore(Mario, luigi.Task):
 
     def requires(self):
         return [
-            ItemRelevance(),
+            DevItemRelevance(),
             ItemPopularity(days=self.days),
             FULL_TRAIN_USERS_JOB
         ]
@@ -459,7 +460,7 @@ class UserTemperature(Mario, luigi.Task):
         self.save_parquet(counts)
 
 
-class ItemRelevance(Mario, luigi.Task):
+class DevItemRelevance(ItemRelevance):
     """
     Calculates a measure of relevance of item for a user
     based on the dev set.
@@ -484,34 +485,6 @@ class ItemRelevance(Mario, luigi.Task):
     def requires(self):
         return FilteredDevSet()
 
-    def _run(self):
-        user_items = (
-            self.requires()
-            .load_parquet()
-            .groupby(['item', 'reviewerID'])
-            .agg({'overall': 'max'})
-            .reset_index()
-        )
-        user_items['relevance'] = user_items.overall.map({
-            1: 1,
-            2: 1,
-            3: 1,
-            4: 2,
-            5: 2
-        })
-
-        # have to break out of dask here because there is no rank function in
-        # dask
-        user_items_pd = user_items.compute()
-        user_items_pd['rank'] = (
-            user_items_pd
-            .groupby('reviewerID')
-            .relevance
-            .rank(method='first')
-            .astype('int')
-        )
-        self.save_parquet(dd.from_pandas(user_items_pd, npartitions=100))
-
 
 class EvaluateReco(Mario, luigi.Task):
     """
@@ -529,7 +502,7 @@ class EvaluateReco(Mario, luigi.Task):
 
     def requires(self):
         return [
-            ItemRelevance(),
+            DevItemRelevance(),
             get_reco_job(self.reco_name, self.k)
         ]
 
@@ -571,7 +544,7 @@ class EvaluateRecoDetail(Mario, luigi.Task):
 
     def requires(self):
         return [
-            ItemRelevance(),
+            DevItemRelevance(),
             UserTemperature(),
             get_reco_job(self.reco_name, self.k)
         ]
