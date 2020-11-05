@@ -6,7 +6,7 @@ from scipy.sparse import lil_matrix, save_npz
 
 PROCESSED_DATA_DIR = Path("data/processed/amazon")
 IS_VALID = True
-STRATEGY = "leave_one_out"
+STRATEGY = "leave_n_out"
 
 
 def built_interaction_mtx(interactions, output_fname):

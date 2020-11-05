@@ -29,8 +29,7 @@ def compute_scores(df):
     )
 
 
-def compute_recency_factor(df_inp, xmid=365, tau=80, top=1):
-    df = df_inp.copy()
+def compute_recency_factor(df, xmid=365, tau=80, top=1):
     present = df.reviewDate.max()
     df["days_to_present"] = present - df["reviewDate"]
     df["days_to_present_inv"] = (df.days_to_present.max() - df.days_to_present).dt.days
@@ -44,7 +43,10 @@ def keep_last_n_years(df, n_years=5):
     df["reviewDate"] = pd.to_datetime(df["unixReviewTime"], unit="s")
     start_date = df.reviewDate.max() - pd.DateOffset(years=n_years)
     df_recent = df[df.reviewDate >= start_date]
+    times_bought = df_recent.groupby(["user", "item"]).size().reset_index()
+    times_bought.columns = ["user", "item", "times_bought"]
     df_recent.drop_duplicates(["user", "item"], inplace=True, keep="last")
+    df_recent = pd.merge(df_recent, times_bought, on=["user", "item"])
     return df_recent
 
 
@@ -60,7 +62,7 @@ def filter_users_and_items(df_inp, min_reviews_per_user=5, min_reviews_per_item=
             df.item.value_counts() >= min_reviews_per_item
         ].index
         df = df[df.user.isin(keep_items)]
-    return df
+    return df.reset_index(drop=True)
 
 
 def time_train_test_split(df_inp, dataset_name, test_fraction=0.2):
@@ -78,14 +80,16 @@ def time_train_test_split(df_inp, dataset_name, test_fraction=0.2):
     valid_df = test_df.iloc[:valid_size]
     test_df = test_df.iloc[valid_size:]
 
-    # scores and recency_factor are only needed for the training dataset,
-    # since metrics on validation and testing will be ranking metrics
     train_df.reset_index(drop=True, inplace=True)
-    compute_scores(train_df)
+    # recency_factor is only needed for the training dataset, since metrics on
+    # validation and testing will be ranking metrics
     compute_recency_factor(train_df)
+    compute_scores(train_df)
 
     valid_df.reset_index(drop=True, inplace=True)
     test_df.reset_index(drop=True, inplace=True)
+    compute_scores(valid_df)
+    compute_scores(test_df)
 
     if not os.path.isdir(PROCESSED_DATA_DIR):
         os.makedirs(PROCESSED_DATA_DIR)
@@ -131,14 +135,20 @@ def leave_one_out_train_test_split(df_inp, dataset_name):
     df = df_inp.copy()
     df = df.sort_values(["user", "reviewDate"], ascending=[True, True]).reset_index(
         drop=True
-    )[["user", "item", "overall"]]
+    )[["user", "item", "reviewDate", "overall", "times_bought"]]
 
     test = df.groupby("user").tail(2)
+
     train = pd.merge(df, test, on=["user", "item"], how="outer", suffixes=("", "_y"))
     train = train[train.overall_y.isnull()].reset_index(drop=True)
-    train.drop("overall_y", axis=1, inplace=True)
+    train.drop([c for c in train.columns if "_y" in c], axis=1, inplace=True)
+    compute_recency_factor(train, xmid=730, tau=120, top=1)
+    compute_scores(train)
+
     valid = test.groupby("user").head(1).reset_index(drop=True)
     test = test.groupby("user").tail(1).reset_index(drop=True)
+    compute_scores(valid)
+    compute_scores(test)
 
     if not os.path.isdir(PROCESSED_DATA_DIR):
         os.makedirs(PROCESSED_DATA_DIR)
@@ -153,7 +163,8 @@ def leave_one_out_train_test_split(df_inp, dataset_name):
         PROCESSED_DATA_DIR / "_".join(["leave_one_out_te", dataset_name + ".f"])
     )
 
-    return train, valid, test
+    cols_to_return = ["user", "item", "overall"]
+    return train[cols_to_return], valid[cols_to_return], test[cols_to_return]
 
 
 def get_last_n(g, fr=0.2):
@@ -168,7 +179,7 @@ def leave_n_out_train_test_split(df_inp, dataset_name, test_size=0.2):
     df = df_inp.copy()
     df = df.sort_values(["user", "reviewDate"], ascending=[True, True]).reset_index(
         drop=True
-    )[["user", "item", "overall"]]
+    )[["user", "item", "reviewDate", "overall", "times_bought"]]
 
     print("INFO: first round, train/test split")
     tr_user_groups = df.groupby("user")
@@ -181,7 +192,9 @@ def leave_n_out_train_test_split(df_inp, dataset_name, test_size=0.2):
         df, test_and_val, on=["user", "item"], how="outer", suffixes=("", "_y")
     )
     train = train[train.overall_y.isnull()].reset_index(drop=True)
-    train.drop("overall_y", axis=1, inplace=True)
+    train.drop([c for c in train.columns if "_y" in c], axis=1, inplace=True)
+    compute_recency_factor(train, xmid=730, tau=120, top=1)
+    compute_scores(train)
 
     print("INFO: second round, valid/test split")
     te_user_groups = test_and_val.groupby("user")
@@ -192,7 +205,9 @@ def leave_n_out_train_test_split(df_inp, dataset_name, test_size=0.2):
         test_and_val, test, on=["user", "item"], how="outer", suffixes=("", "_y")
     )
     valid = valid[valid.overall_y.isnull()].reset_index(drop=True)
-    valid.drop("overall_y", axis=1, inplace=True)
+    valid.drop([c for c in valid.columns if "_y" in c], axis=1, inplace=True)
+    compute_scores(valid)
+    compute_scores(test)
 
     train.to_feather(
         PROCESSED_DATA_DIR / "_".join(["leave_n_out_tr", dataset_name + ".f"])
@@ -204,7 +219,8 @@ def leave_n_out_train_test_split(df_inp, dataset_name, test_size=0.2):
         PROCESSED_DATA_DIR / "_".join(["leave_n_out_te", dataset_name + ".f"])
     )
 
-    return train, valid, test
+    cols_to_return = ["user", "item", "overall"]
+    return train[cols_to_return], valid[cols_to_return], test[cols_to_return]
 
 
 def sample_negative(group, all_items, n_neg):
@@ -232,11 +248,11 @@ def sample_negative_test(train, test, n_neg, strategy, dataset_name, is_valid):
 
     # numericalize has to happen here so sample_negative runs way faster
     test = test[test.item.isin(train.item.unique())]
-    train_groups = train[train.user.isin(test.user.unique())].groupby("user")
     train, users_idx, items_idx = user_item_to_index(
         train, user_idx_fname, item_idx_fname
     )
     test = user_item_to_index(test, users_idx=users_idx, items_idx=items_idx)
+    train_groups = train[train.user.isin(test.user.unique())].groupby("user")
 
     n_users = train.user.nunique()
     n_items = train.item.nunique()
@@ -288,6 +304,8 @@ if __name__ == "__main__":
         elif dataset == "5core":
             print("INFO: splitting 5 core dataset...")
             df = pd.read_feather(RAW_DATA_DIR / "Movies_and_TV_5.f")
+
+        # df = df.sample(n=100000)
 
         df_rename = rename_user_item_columns(df)
 

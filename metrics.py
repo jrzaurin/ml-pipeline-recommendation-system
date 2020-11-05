@@ -54,14 +54,14 @@ def ndgc_score(rec, true, true_relevance, k):
     return dcg / idcg
 
 
+def hit_ratio(rec, true, k):
+    return np.intersect1d(rec[:k], true).shape[0]
+
+
 def recall_binary(rec, true, k):
     tp = np.intersect1d(rec[:k], true).shape[0]
     allp = true.shape[0]
     return tp / allp
-
-
-def hit_ratio(rec, true, k):
-    return np.intersect1d(rec[:k], true).shape[0]
 
 
 def _dcg_binary(rec, true, k):

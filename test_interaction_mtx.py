@@ -7,7 +7,7 @@ from scipy.sparse import load_npz
 
 PROCESSED_DATA_DIR = Path("data/processed/amazon")
 IS_VALID = True
-STRATEGY = "leave_one_out"
+STRATEGY = "leave_n_out"
 
 
 def test_urm(train_df, data, urm, user_idx, item_idx):
@@ -33,10 +33,11 @@ if __name__ == "__main__":
                 dataset
             )
         )
-        train_df = pd.read_feather(
-            PROCESSED_DATA_DIR / "_".join([STRATEGY, "tr", dataset + ".f"])
-        )
+
         if IS_VALID:
+            train_df = pd.read_feather(
+                PROCESSED_DATA_DIR / "_".join([STRATEGY, "tr", dataset + ".f"])
+            )
             input_fname = "_".join([STRATEGY, "w_negative", dataset, "valid.npz"])
             urm_fname = "_".join(["URM", STRATEGY, dataset, "valid.npz"])
             user_idx_fname = "_".join(
@@ -46,6 +47,13 @@ if __name__ == "__main__":
                 ["item_idx", STRATEGY, "w_negative", dataset, "valid.p"]
             )
         else:
+            train_df = pd.read_feather(
+                PROCESSED_DATA_DIR / "_".join([STRATEGY, "tr", dataset + ".f"])
+            )
+            valid_df = pd.read_feather(
+                PROCESSED_DATA_DIR / "_".join([STRATEGY, "val", dataset + ".f"])
+            )
+            train_df = pd.concat([train_df, valid_df])
             input_fname = "_".join([STRATEGY, "w_negative", dataset, "test.npz"])
             urm_fname = "_".join(["URM", STRATEGY, dataset, "test.npz"])
             user_idx_fname = "_".join(
