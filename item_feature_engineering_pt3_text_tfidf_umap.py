@@ -17,10 +17,16 @@ if __name__ == "__main__":
     tokenized_descriptions = pd.read_pickle(
         PROCESSED_DATA_DIR / "tokenized_descriptions.p"
     )
-    item_dec = [" ".join(d) for d in tokenized_descriptions.description.tolist()]
 
-    vectorizer = TfidfVectorizer(max_features=MAX_VOCAB_SIZE, stop_words=STOP_WORDS)
-    X = vectorizer.fit_transform(item_dec)
+    item_desc = []
+    for desc in tokenized_descriptions.description.tolist():
+        item_desc.append([tok for tok in desc if tok not in STOP_WORDS])
+
+    vectorizer = TfidfVectorizer(
+        max_features=MAX_VOCAB_SIZE, preprocessor=lambda x: x, tokenizer=lambda x: x
+    )
+
+    X = vectorizer.fit_transform(item_desc)
 
     for n in [2, 5, 10, 20]:
 
