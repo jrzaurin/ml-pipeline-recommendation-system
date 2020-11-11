@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import load_npz
 from sklearn.metrics import pairwise_distances
+from tqdm import tqdm
 
 from metrics import hit_ratio, ndgc_binary
-from tqdm import tqdm
 
 PROCESSED_DATA_DIR = Path("data/processed/amazon")
 RESULTS_DIR = Path("results")

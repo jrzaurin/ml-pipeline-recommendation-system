@@ -59,30 +59,21 @@ if __name__ == "__main__":
     # item in more than one diff date. I had a look to a few, and there are still
     # mistakes in data collection. In summary, we will use directly the training
     # dataset.
-    train = pd.read_feather(PROCESSED_DATA_DIR / "train_full.f")
-
-    train.drop(
+    train = pd.read_feather(PROCESSED_DATA_DIR / "leave_one_out_tr_full.f")
+    is_user_verified = pd.concat(
         [
-            c
-            for c in train.columns
-            if c
-            not in [
-                "overall",
-                "verified",
-                "user",
-                "item",
-                "reviewDate",
-                "recency_factor",
-            ]
-        ],
-        axis=1,
-        inplace=True,
-    )
+            pd.read_feather(PROCESSED_DATA_DIR / "train_full.f"),
+            pd.read_feather(PROCESSED_DATA_DIR / "valid_full.f"),
+            pd.read_feather(PROCESSED_DATA_DIR / "test_full.f"),
+        ]
+    )[["user", "verified"]].drop_duplicates("user", keep="last")
+    is_user_verified = is_user_verified[is_user_verified.user.isin(train.user.unique())]
+
     # faster than apply...
     train["day_of_month"] = [d.day for d in train.reviewDate.tolist()]
     train["day_of_week"] = [d.dayofweek for d in train.reviewDate.tolist()]
 
-    train["score"] = train.overall * train.recency_factor
+    # train["score"] = train.overall * train.recency_factor
 
     # item features
     item_feat = pd.read_pickle(PROCESSED_DATA_DIR / "meta_movies_and_tv_processed.p")
@@ -157,6 +148,18 @@ if __name__ == "__main__":
         .index.tolist(),
         columns=["user", "category"],
     )
+    most_common_cat.columns = ["user", "top_category"]
+
+    # user most common brand
+    most_common_brand = pd.DataFrame(
+        user_item_feat.groupby("user")["brand"]
+        .value_counts()
+        .groupby("user")
+        .head(1)
+        .index.tolist(),
+        columns=["user", "brand"],
+    )
+    most_common_brand.columns = ["user", "top_brand"]
 
     # user most common language
     most_common_lang = pd.DataFrame(
@@ -167,6 +170,7 @@ if __name__ == "__main__":
         .index.tolist(),
         columns=["user", "language"],
     )
+    most_common_lang.columns = ["user", "top_language"]
 
     # user top 2 topics and UMAP dims
     user_item_lda = pd.merge(train[["user", "item"]], item_lda_10, on="item")
@@ -184,15 +188,19 @@ if __name__ == "__main__":
 
     # merge all
     dfs = [
+        is_user_verified,
         ratings_stats,
         time_diff,
         day_of_week_and_month,
         items_count,
         price_stats,
         most_common_cat,
+        most_common_brand,
         most_common_lang,
         top_topics,
         top_umap,
     ]
-    train_user_feat = reduce(lambda left, right: pd.merge(left, right, on="user", how="outer"), dfs)
+    train_user_feat = reduce(
+        lambda left, right: pd.merge(left, right, on="user", how="outer"), dfs
+    )
     train_user_feat.to_feather(PROCESSED_DATA_DIR / "train_user_feat.f")
