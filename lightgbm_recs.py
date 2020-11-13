@@ -1,10 +1,12 @@
 import gc
 import pickle
 from pathlib import Path
-from time import time
 
 import lightgbm as lgb
 import pandas as pd
+
+# from time import time
+
 
 pd.options.display.max_columns = 100
 pd.options.display.max_rows = 100
@@ -147,7 +149,6 @@ def run_lightgbm(
         "is_unbalance": True if not recency else False,
     }
 
-    s = time()
     lgb_model = lgb.train(
         params,
         lgbtrain,
@@ -156,7 +157,6 @@ def run_lightgbm(
         early_stopping_rounds=50,  # if is_valid else None,
         verbose_eval=True,
     )
-    print((time() - s) // 60)
 
     del lgbtrain
     gc.collect()
