@@ -147,6 +147,8 @@ def leave_one_out_train_test_split(df_inp, dataset_name):
 
     valid = test.groupby("user").head(1).reset_index(drop=True)
     test = test.groupby("user").tail(1).reset_index(drop=True)
+    # this has to be done better, but for now, we live with it...
+    compute_recency_factor(valid, xmid=730, tau=120, top=1)
     compute_scores(valid)
     compute_scores(test)
 

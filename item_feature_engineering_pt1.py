@@ -120,4 +120,4 @@ if __name__ == "__main__":
     meta_processed = process_price(meta_processed)
     meta_processed = process_details(meta_processed)
 
-    meta_processed.to_pickle(PROCESSED_DATA_DIR / "meta_movies_and_tv_processed.p")
+    meta_processed.to_pickle(PROCESSED_DATA_DIR / "item_features.p")
