@@ -11,11 +11,11 @@ import dask.dataframe as dd
 
 from utils import Mario, start_spark
 from x04_train_test_split import FilteredDevSet
-from baselines import MostPopularReco, RandomReco, MostPopularInCatReco, ItemPopularity
+import baselines as bas
 from x04_train_test_split import ONE_YEAR_REVIEWS_JOB, DEV_SET_REVIEWS_JOB
-from x04_train_test_split import FULL_TRAIN_USERS_JOB
 from biggraph import PBGReco, PBGRecoV2
-from train_set import ItemRelevance
+from train_test_set import ItemRelevance, DevItemRelevance
+from tabular import TrainTestModel
 
 
 def get_reco_job(reco_name, k):
@@ -33,9 +33,9 @@ def get_reco_job(reco_name, k):
         num_negs=1000,
     )
     return {
-        'Most Popular': MostPopularReco(days=days, k=k),
-        'Most Popular in Cat': MostPopularInCatReco(days=days, k=k),
-        'Random': RandomReco(days=days, k=k),
+        'Most Popular': bas.MostPopularReco(days=days, k=k),
+        'Most Popular in Cat': bas.MostPopularInCatReco(days=days, k=k),
+        'Random': bas.RandomReco(days=days, k=k),
         'PBG V01': PBGReco(
             epochs=2,
             days=2,
@@ -344,97 +344,6 @@ def ndcg(recs, relevance, k):
     return result[['reviewerID', 'NDCG', 'DCG', 'hits']]
 
 
-class ItemsToScore(Mario, luigi.Task):
-    """
-    set of k items per user.
-
-    The items include all the items the user has reviewed in the DEV set
-    (unless it's more than k). The rest are drawn at random from the set of
-    recent items (that includes all items from dev set + last self.days days
-    of the train set.
-
-    Only warm users are included - users with at least 1 interaction in the
-    extended training set (that is the last 5 years).
-    """
-    k = luigi.IntParameter()
-    days = luigi.IntParameter()
-
-    def output_dir(self):
-        return 'dev_metrics/items_to_score/days_%s_k_%s' % (self.days, self.k)
-
-    def requires(self):
-        return [
-            DevItemRelevance(),
-            ItemPopularity(days=self.days),
-            FULL_TRAIN_USERS_JOB
-        ]
-
-    def _run(self):
-        sc, sqlc = start_spark()
-        rel_job, recent_items_job, users_job = self.requires()
-
-        dev_set_items = (
-            rel_job.load_parquet(sqlc=sqlc, from_local=True)
-            .select('item')
-            .distinct()
-        )
-
-        recent_items = recent_items_job.load_parquet(
-            sqlc=sqlc, from_local=True).select('item')
-        recent_items.toPandas()
-        dev_set_items.printSchema()
-        recent_items.printSchema()
-        total_items = dev_set_items.union(recent_items).distinct().toPandas()
-
-        total_items['ind'] = total_items.index
-        n = len(total_items)
-        item2ind = sqlc.createDataFrame(total_items)
-
-        relevance = rel_job.load_parquet(sqlc=sqlc, from_local=True)
-
-        k = self.k
-
-        def generate_items(x):
-            user, interactions = x
-            interactions = sorted(interactions, key=lambda x: -x[1])[:k]
-            items = {item_ind for item_ind in interactions}
-            while len(interactions) < k:
-                new_item = randint(0, n - 1)
-                if new_item not in items:
-                    interactions.append((new_item, 0))
-                    items.add(new_item)
-
-            for i, (item_ind, item_relevance) in enumerate(interactions):
-                yield Row(
-                    reviewerID=user,
-                    rank=i + 1,
-                    ind=item_ind,
-                    relevance=item_relevance
-                )
-        users = users_job.load_parquet(sqlc=sqlc, from_local=True)
-        result = (
-            relevance
-            .join(users, on='reviewerID')               # limit to warm users
-            # translate item id to index
-            .join(item2ind, on='item')
-            .select('reviewerID', 'ind', 'relevance')
-            .rdd
-            .map(lambda x: (x.reviewerID, [(x.ind, x.relevance)]))
-            .reduceByKey(lambda a, b: a + b)
-            .flatMap(generate_items)
-            .toDF()
-            # translate index back to item id
-            .join(item2ind, on='ind')
-            .select(
-                'reviewerID',
-                'item',
-                'rank',
-                'relevance'
-            )
-        )
-        self.save_parquet(result.repartition(200))
-
-
 class UserTemperature(Mario, luigi.Task):
 
     def requires(self):
@@ -458,32 +367,6 @@ class UserTemperature(Mario, luigi.Task):
             .merge(dev_users, on='reviewerID')
         )
         self.save_parquet(counts)
-
-
-class DevItemRelevance(ItemRelevance):
-    """
-    Calculates a measure of relevance of item for a user
-    based on the dev set.
-
-    Relevance = 1 if user rated item 1, 2, 3
-    Relevance = 2 if user rated item 4, 5
-    Relevance = 0 for if use has not rated the item
-
-    If a user has rated the item multiple times, max rating is used.
-    0 relevance user-item pairs are not saved.
-
-    item: string
-    reviewerID: string
-    overall: double
-    relevance: int64
-    rank: int64
-    """
-
-    def output_dir(self):
-        return 'dev_metrics/item_relevance'
-
-    def requires(self):
-        return FilteredDevSet()
 
 
 class EvaluateReco(Mario, luigi.Task):
@@ -655,25 +538,209 @@ class EvalEverything(Mario, luigi.Task):
         self.save_parquet(all_together)
 
 
-def get_reqs(job):
-    reqs = job.requires()
-    if isinstance(reqs, Mario):
-        return [reqs]
-    else:
-        return list(reqs)
+class EvaluateTabularReco(Mario, luigi.Task):
+    """
+    NDCG: double
+    DCG: double
+    hits: double
+    temperature: string
+    user_count: int64
+    model: string
+    features: string
+    k: int64
+    n_neg: int64
+    """
+    model_string = luigi.Parameter()
+    feat_name = luigi.Parameter()
+    train_n = luigi.IntParameter()
+    test_k = luigi.IntParameter()
+    hot_threshold = 6
+
+    def output_dir(self):
+        return 'dev_metrics/eval3/tabular/{FEAT_NAME}/{TRAIN_N}/{MODEL}/{K}'.format(
+            FEAT_NAME=self.feat_name,
+            TRAIN_N=self.train_n,
+            MODEL=self.model_string,
+            K=self.test_k
+        )
+
+    def requires(self):
+        return [
+            TrainTestModel(
+                model_string=self.model_string,
+                feat_name=self.feat_name,
+                train_n=self.train_n,
+                test_k=self.test_k
+            ),
+            UserTemperature()
+        ]
+
+    def _run(self):
+        train_test_job, temperature_job = self.requires()
+        user_temp = temperature_job.load_parquet()
+
+        test_preds = train_test_job.load_parquet('test')[
+            ['reviewerID', 'item', 'relevance', 'prediction']
+        ].compute()
+
+        test_preds['minus_pred'] = -test_preds.prediction
+        test_preds['rank'] = (
+            test_preds
+            .groupby('reviewerID')
+            .minus_pred.rank(method='first')
+            .astype(int)
+        )
+
+        relevance_df = test_preds[test_preds.relevance > 0].reset_index(
+            drop=True)
+        relevance_df['minus_rel'] = -relevance_df.relevance
+        relevance_df['rank'] = (
+            relevance_df
+            .groupby('reviewerID')
+            .minus_rel.rank(method='first')
+            .astype('int')
+        )
+
+        recs = test_preds[['reviewerID', 'item', 'rank']]
+        relevance = relevance_df[['reviewerID', 'item', 'relevance', 'rank']]
+
+        all_results = []
+        # calculate metrics separately for user temperature = 1, 2, ...
+        for temperature in range(1, self.hot_threshold):
+            users = user_temp[user_temp.interactions == temperature].compute()
+            recs_subset = recs.merge(users, on='reviewerID')
+            relevance_subset = relevance.merge(users, on='reviewerID')
+
+            metrics = ndcg(recs_subset, relevance_subset, self.test_k)
+            results = dict(metrics.mean())
+            results['temperature'] = str(temperature)
+            results['user_count'] = len(users)
+            results_pd = pd.DataFrame([results])
+            all_results.append(results_pd)
+
+        users = user_temp[user_temp.interactions >=
+                          self.hot_threshold].compute()
+        recs_subset = recs.merge(users, on='reviewerID')
+        relevance_subset = relevance.merge(users, on='reviewerID')
+
+        metrics = ndcg(recs_subset, relevance_subset, self.test_k)
+        results = dict(metrics.mean())
+        results['temperature'] = '>= %s' % self.hot_threshold
+        results['user_count'] = len(users)
+        results_pd = pd.DataFrame([results])
+        all_results.append(results_pd)
+        print(results_pd)
+
+        final = pd.concat(all_results).reset_index(drop=True)
+        final['model'] = self.model_string
+        final['features'] = self.feat_name
+        final['k'] = self.test_k
+        final['n_neg'] = self.train_n
+        results_dd = dd.from_pandas(final, npartitions=1)
+        self.save_parquet(results_dd)
 
 
-def what_needs_to_run(job):
-    if job.complete():
-        return None
+class EvaluateMostPopReco(EvaluateTabularReco):
+    """
+    NDCG: double
+    DCG: double
+    hits: double
+    temperature: string
+    user_count: int64
+    model: string
+    features: string
+    k: int64
+    n_neg: int64
+    """
+    model_string = 'popular in cat'
+    feat_name = ''
+    train_n = -1
+    test_k = luigi.IntParameter()
+    hot_threshold = 6
+    days = 31
 
-    for parent in get_reqs(job):
-        what_needs = what_needs_to_run(parent)
-        if what_needs is not None:
-            return what_needs
-    return job
+    def output_dir(self):
+        return 'dev_metrics/eval3/most_popular/{K}'.format(
+            K=self.test_k
+        )
+
+    def requires(self):
+        return [
+            bas.MostPopInCat(
+                test_k=self.test_k,
+                days=self.days
+            ),
+            UserTemperature()
+        ]
 
 
-def run_everything(job):
-    while what_needs_to_run(job) is not None:
-        what_needs_to_run(job).run()
+class EvalSink(Mario, luigi.Task):
+    """
+    NDCG: double
+    DCG: double
+    hits: double
+    temperature: string
+    user_count: int64
+    model: string
+    features: string
+    k: int64
+    n_neg: int64
+    """
+
+    def output_dir(self):
+        return 'dev_metrics/eval3/sink'
+
+    def requires(self):
+        test_k = 100
+        yield EvaluateMostPopReco(test_k=test_k)
+        yield EvaluateTabularReco(
+            model_string='linreg',
+            feat_name='basic',
+            train_n=5,
+            test_k=100
+        )
+        yield EvaluateTabularReco(
+            model_string='xgb',
+            feat_name='basic',
+            train_n=5,
+            test_k=100
+        )
+        yield EvaluateTabularReco(
+            model_string='xgb',
+            feat_name='basic',
+            train_n=10,
+            test_k=100
+        )
+        # for feat_name in ['basic', 'basic s4']:
+        #     for train_n in [5, 10]:
+        #         for model in ['linreg', 'xgb']:
+        #             yield EvaluateTabularReco(
+        #                 model_string=model,
+        #                 feat_name=feat_name,
+        #                 train_n=train_n,
+        #                 test_k=test_k
+        #             )
+
+    def _run(self):
+        experiments = [exp.load_parquet() for exp in self.requires()]
+        all_together = dd.concat(experiments)
+        print(all_together.compute())
+        self.save_parquet(all_together)
+
+
+if __name__ == '__main__':
+    job = EvalSink()
+    # job = EvaluateTabularReco(
+    #     model_string='linreg',
+    #     feat_name='basic',
+    #     train_n=5,
+    #     test_k=100
+    # )
+    job.clean_output()
+
+    from utils import print_dag, run_everything
+    print_dag(job)
+    print()
+    # from time import sleep
+    # sleep(4)
+    run_everything(job)
