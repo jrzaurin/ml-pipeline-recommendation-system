@@ -137,8 +137,9 @@ class SubsetUsers(Mario, luigi.Task):
         cond2 = df.reviewDate.map(
             lambda x: x <= end, meta=pd.Series(
                 [], dtype=bool))
-        filtered = df[cond1 & cond2]
+        filtered = df[cond1 & cond2][['reviewerID']].drop_duplicates()
         filtered.to_parquet(self.full_output_dir())
+
 
 
 def n_days_users(n):
