@@ -8,6 +8,8 @@ from psutil import virtual_memory
 import pathlib
 import shutil
 from pathlib import Path
+import colorama
+from colorama import Fore
 
 import s3fs
 import dask.dataframe as dd
@@ -121,6 +123,56 @@ def start_spark(app_name='Bob'):
     return sc, sqlc
 
 
+def get_reqs_list(job):
+    reqs = job.requires()
+    try:
+        return list(reqs)
+    except TypeError as te:
+        if reqs is None:
+            return []
+        else:
+            return [reqs]
+
+def what_needs_to_run(job):
+    if job.complete():
+        return None
+
+    for parent in get_reqs_list(job):
+        what_needs = what_needs_to_run(parent)
+        if what_needs is not None:
+            return what_needs
+    return job
+
+def run_everything(job):
+    while what_needs_to_run(job) is not None:
+        what_needs_to_run(job).run()
+
+
+def print_dag(job):
+    colorama.init()
+    visited = set()
+    def aux(job, indent=0):
+        if job.output_dir() in visited:
+            return
+
+        if job.complete():
+            s = ' ' * indent + Fore.GREEN + 'o ' + Fore.RESET + str(job) + ' ' + Fore.GREEN + job.output_dir() + Fore.RESET
+        else:
+            s = ' ' * indent + Fore.RED + 'x ' + Fore.RESET + str(job) + ' ' + Fore.RED + job.output_dir() + Fore.RESET
+        print(s)
+        visited.add(job.output_dir())
+        for child in get_reqs_list(job):
+            aux(child, indent + 2)
+
+    aux(job)
+    print()
+    needs_to_run = what_needs_to_run(job)
+    if needs_to_run is None:
+        print('nothing to run')
+    else:
+        print('next to run:\n', str(needs_to_run))
+
+
 class Mario(object):
     """
     Mixin for use with luigi.Task
@@ -128,6 +180,7 @@ class Mario(object):
     TODO: add method to print the schema of the output parquet
     """
     cleanup = luigi.BoolParameter(significant=False, default=False)
+    dry = luigi.BoolParameter(significant=False, default=False)
 
     def complete(self):
         if self.cleanup and not hasattr(self, 'just_finished_running'):
@@ -217,6 +270,11 @@ class Mario(object):
         print_parquet_schema(self.full_output_dir(subdir))
 
     def run(self):
+        if self.dry:
+            print('DRY RUN')
+            print_dag(self)
+            return
+
         print('RUNNING')
         print(self)
         self.clean_output()
