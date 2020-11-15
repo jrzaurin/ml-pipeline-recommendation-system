@@ -1,5 +1,6 @@
 import json
 from datetime import timedelta
+from datetime import datetime
 from random import choices
 
 import pandas as pd
@@ -11,7 +12,7 @@ import dask.dataframe as dd
 from utils import Mario, start_spark
 from x04_train_test_split import n_days_subset, FilteredDevSet
 from x03_parquetify import ParquetifyMetadata
-from datetime import datetime
+from train_test_set import DevSet
 
 
 class ItemPopularity(Mario, luigi.Task):
@@ -342,3 +343,70 @@ class MostPopularInCatReco(Mario, luigi.Task):
         )
         result = full_fav_cats.join(items_per_cat, on='cat_1')
         self.save_parquet(result)
+
+
+class MostPopInCat(Mario, luigi.Task):
+    test_k = luigi.IntParameter()
+    days = luigi.IntParameter()
+
+    def output_dir(self):
+        return 'baselines/most_pop_in_cat_new/k=%s_days=%s' % (
+            self.test_k, self.days)
+
+    def requires(self):
+        return [
+            UserFavCat(),
+            ItemPopularity(days=self.days),
+            DevSet(k=self.test_k, days=self.days)
+        ]
+
+    def _run(self):
+        sc, sqlc = start_spark()
+        fav_cat_job, item_pop_job, dev_set_job = self.requires()
+        fav_cats = (
+            fav_cat_job
+            .load_parquet(sqlc=sqlc, from_local=True)
+            .selectExpr(
+                'reviewerID',
+                'cat_1 as user_fav_cat'
+            )
+        )
+
+        item_pop = (
+            item_pop_job
+            .load_parquet(sqlc=sqlc, from_local=True)
+            .select(
+                'item',
+                'cat_1',
+                'total_reviews'
+            )
+        )
+
+        dev_set = (
+            dev_set_job
+            .load_parquet(sqlc=sqlc, from_local=True)
+            .select(
+                'reviewerID',
+                'item',
+                'relevance'
+            )
+        )
+
+        self.save_parquet(
+            dev_set
+            .join(item_pop, on='item', how='left')
+            .join(fav_cats, on='reviewerID', how='left')
+            .selectExpr(
+                'reviewerID',
+                'item',
+                'relevance',
+                '''
+                case
+                    when user_fav_cat = cat_1
+                    then 1000000 + coalesce(total_reviews, 0)
+                    else coalesce(total_reviews, 0)
+                end as prediction
+                '''
+            ),
+            'test'
+        )
