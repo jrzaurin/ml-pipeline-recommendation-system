@@ -10,6 +10,15 @@ from utils import Mario, start_spark
 
 class ItemMetaCountEncoded(Mario, luigi.Task):
     """
+    args:
+    train_set: bool
+
+    Returns total count of interactions by all users for a given
+    item, brand, cat_1, cat_2, cat_3, cat_4, cat_5.
+
+    If train_set - calculates in a leave-one-out fashion (meaning - subtracts 1 from all counts)
+
+    Indexed by item.
     pyarrow.Table
     item: string
     brand: string
@@ -27,8 +36,11 @@ class ItemMetaCountEncoded(Mario, luigi.Task):
     item_ce: int64 not null
     """
 
+    train_set = luigi.BoolParameter()
+
     def output_dir(self):
-        return 'item_features/count_encoded'
+        return 'item_features/count_encoded/%s' % (
+            'train' if self.train_set else 'test')
 
     def requires(self):
         return OnlyShortMeta(), ONE_YEAR_REVIEWS_JOB
@@ -77,12 +89,37 @@ class ItemMetaCountEncoded(Mario, luigi.Task):
         reviews_meta = reviews.join(meta2, on='item').cache()
         features = meta2
         for col in cols_to_encode:
+            feat_name = 'f_' + col + '_ce'
             count_df = (
                 reviews_meta
                 .groupBy(col)
                 .count()
-                .withColumnRenamed('count', col + '_ce')
+                .withColumnRenamed('count', feat_name)
             )
             features = features.join(count_df, on=col)
 
-        self.save_parquet(features)
+        if self.train_set:
+            self.save_parquet(
+                features.selectExpr(
+                    'item',
+                    'brand',
+                    'cat_5',
+                    'cat_4',
+                    'cat_3',
+                    'cat_2',
+                    'cat_1',
+                    'f_cat_1_ce - 1 as f_cat_1_ce',
+                    'f_cat_2_ce - 1 as f_cat_2_ce',
+                    'f_cat_3_ce - 1 as f_cat_3_ce',
+                    'f_cat_4_ce - 1 as f_cat_4_ce',
+                    'f_cat_5_ce - 1 as f_cat_5_ce',
+                    'f_brand_ce - 1 as f_brand_ce',
+                    'f_item_ce - 1 as f_item_ce'
+                )
+                .filter('f_item_ce > 0')
+            )
+        else:
+            self.save_parquet(features)
+
+        df = self.load_parquet(sqlc=sqlc, from_local=True)
+        assert df.count() == df.select('item').count()
