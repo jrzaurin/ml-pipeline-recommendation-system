@@ -1,18 +1,17 @@
 import argparse
-import heapq
 import os
 from time import time
 
 import numpy as np
 import pandas as pd
 import torch
-from scipy.sparse import load_npz
+import torch.nn.functional as F
 from torch import nn
-from torch.optim.lr_scheduler import CyclicLR
+# from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
-from tqdm import trange
+from tqdm import tqdm, trange
 
-from metrics import hit_ratio, ndgc_binary
+from metrics import hit_ratio, ndcg_binary
 
 
 def parse_args():
@@ -20,7 +19,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--datadir", type=str, default="data/raw/amazon", help="data directory."
+        "--datadir", type=str, default="data/processed/amazon", help="data directory."
     )
     parser.add_argument(
         "--modeldir",
@@ -40,12 +39,6 @@ def parse_args():
         default="leave_one_out_w_negative_full_valid.npz",
         help="npz file with dataset",
     )
-    parser.add_argument(
-        "--train_urm",
-        type=str,
-        default="URM_leave_one_out_full_valid.npz",
-        help="train user rating matrix for faster iteration",
-    )
     parser.add_argument("--epochs", type=int, default=20, help="number of epochs.")
     parser.add_argument("--batch_size", type=int, default=256, help="batch size.")
     parser.add_argument("--n_emb", type=int, default=8, help="embedding size.")
@@ -55,14 +48,14 @@ def parse_args():
     parser.add_argument(
         "--learner",
         type=str,
-        default="adam",
-        help="Specify an optimizer: adagrad, adam, rmsprop, sgd",
+        default="adamw",
+        help="Specify an optimizer: adamw or sgd",
     )
-    parser.add_argument(
-        "--lr_scheduler",
-        action="store_true",
-        help="boolean to set the use of CyclicLR during training",
-    )
+    # parser.add_argument(
+    #     "--lr_scheduler",
+    #     action="store_true",
+    #     help="boolean to set the use of ReduceLROnPlateau during training",
+    # )
     parser.add_argument(
         "--validate_every", type=int, default=1, help="validate every n epochs"
     )
@@ -97,9 +90,9 @@ class GMF(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Embedding):
-                nn.init.normal_(m.weight)
+                nn.init.kaiming_normal_(m.weight)
             elif isinstance(m, nn.Linear):
-                nn.init.uniform_(m.weight)
+                nn.init.kaiming_normal_(m.weight)
 
     def forward(self, users, items):
 
@@ -111,28 +104,88 @@ class GMF(nn.Module):
         return preds
 
 
+def get_metrics(group, k):
+    df = group[1]
+    true = df[df.score != 0]["item"].values
+    rec = df.sort_values("preds", ascending=False)["item"].values[:k]
+    return (hit_ratio(rec, true, k), ndcg_binary(rec, true, k))
+
+
+def sample_train_neg_instances(
+    train_pos, train_wo_neg_lookup, test_w_neg_lookup, n_items, n_neg
+):
+
+    user, item, labels = [], [], []
+    for u, i, r in tqdm(train_pos, desc="Sample Train Negatives"):
+
+        # we need to make sure they are not in the negative examples used for
+        # testing
+        try:
+            user_test_neg = test_w_neg_lookup[u]
+        except KeyError:
+            user_test_neg = [-666]
+
+        for _ in range(n_neg):
+            j = np.random.randint(n_items)
+            while j in train_wo_neg_lookup[u] or j in user_test_neg:
+                j = np.random.randint(n_items)
+            user.append(u)
+            item.append(j)
+            labels.append(0)
+
+    train_w_negative = np.vstack([user, item, labels]).T
+
+    return train_w_negative.astype(np.int64)
+
+
+def get_train_instances(train_wo_neg, test_w_neg, n_items, n_neg=4):
+
+    train_wo_neg_lookup = train_wo_neg.groupby("user")["item"].apply(list)
+    test_w_neg_lookup = test_w_neg.groupby("user")["item"].apply(list)
+    train_neg = sample_train_neg_instances(
+        train_wo_neg.values,
+        train_wo_neg_lookup,
+        test_w_neg_lookup,
+        n_items,
+        n_neg=n_neg,
+    )
+    train_w_neg = (
+        pd.DataFrame(
+            np.vstack([train_wo_neg, train_neg]),
+            columns=["user", "item", "rating"],
+        )
+        .sort_values(["user", "item"])
+        .drop_duplicates(["user", "item"])
+        .reset_index(drop=True)
+    )
+
+    return train_w_neg.values
+
+
+def checkpoint(model, modelpath):
+    torch.save(model.state_dict(), modelpath)
+
+
 def train(
     model,
-    criterion,
     optimizer,
-    scheduler,
     epoch,
     batch_size,
     use_cuda,
-    train_ratings,
+    train_wo_neg,
     test_w_neg,
     n_items,
     n_neg,
 ):
     model.train()
-    train_dataset = get_train_instances(train_ratings, test_w_neg, n_items, n_neg)
+    train_w_neg = get_train_instances(train_wo_neg, test_w_neg, n_items, n_neg)
     train_loader = DataLoader(
-        dataset=train_dataset, batch_size=batch_size, num_workers=4, shuffle=True
+        dataset=train_w_neg, batch_size=batch_size, num_workers=4, shuffle=True
     )
     train_steps = (len(train_loader.dataset) // train_loader.batch_size) + 1
     running_loss = 0
     with trange(train_steps) as t:
-        for batch_idx, data in enumerate(train_loader):
+        for batch_idx, data in zip(t, train_loader):
             t.set_description("epoch: {}".format(epoch + 1))
             users = data[:, 0]
             items = data[:, 1]
@@ -141,9 +194,7 @@ def train(
                 users, items, labels = users.cuda(), items.cuda(), labels.cuda()
             optimizer.zero_grad()
             preds = model(users, items)
-            if scheduler:
-                scheduler.step()
-            loss = criterion(preds.squeeze(1), labels)
+            loss = F.binary_cross_entropy(preds.squeeze(1), labels)
             loss.backward()
             optimizer.step()
 
@@ -157,7 +208,7 @@ def train(
 
 def evaluate(model, test_loader, use_cuda, topk):
     model.eval()
-    scores = []
+    eval_preds = []
     with torch.no_grad():
         for data in test_loader:
             users = data[:, 0]
@@ -166,100 +217,62 @@ def evaluate(model, test_loader, use_cuda, topk):
             if use_cuda:
                 users, items, labels = users.cuda(), items.cuda(), labels.cuda()
             preds = model(users, items)
-            items_cpu = items.cpu().numpy()
             preds_cpu = preds.squeeze(1).detach().cpu().numpy()
-            split_chuncks = preds_cpu.shape[0] // 100
-            litems = np.split(items_cpu, split_chuncks)
-            lpreds = np.split(preds_cpu, split_chuncks)
-            scores += [get_scores(it, pr, topk) for it, pr in zip(litems, lpreds)]
-    hits = [s[0] for s in scores]
-    ndcgs = [s[1] for s in scores]
-    return (np.array(hits).mean(), np.array(ndcgs).mean())
-
-
-def checkpoint(model, modelpath):
-    torch.save(model.state_dict(), modelpath)
-
-
-def get_scores(items, preds, topk):
-
-    gtitem = items[0]
-
-    # the following 3 lines of code ensure that the fact that the 1st item is
-    # gtitem does not affect the final rank
-    randidx = np.arange(100)
-    np.random.shuffle(randidx)
-    items, preds = items[randidx], preds[randidx]
-
-    map_item_score = dict(zip(items, preds))
-    ranklist = heapq.nlargest(topk, map_item_score, key=map_item_score.get)
-    hr = hit_ratio(ranklist, gtitem)
-    ndcg = ndgc_binary(ranklist, gtitem)
-    return hr, ndcg
-
-
-def get_train_instances(train_arr, train_pos, test_w_neg, n_items, n_neg):
-
-    user, item, labels = [], [], []
-    for u, i, r in train_arr:
-
-        # we need to make sure they are not in the negative examples used for
-        # testing
-        try:
-            user_test_neg = test_w_neg[u]
-        except KeyError:
-            user_test_neg = [-666]
-
-        for _ in range(n_neg):
-            j = np.random.randint(n_items)
-            while j in train_pos[u] or j in user_test_neg:
-                j = np.random.randint(n_items)
-            user.append(u)
-            item.append(j)
-            labels.append(0)
-
-    train_w_negative = np.vstack([user, item, labels]).T
-
-    return train_w_negative.astype(np.int64)
+            eval_preds += [preds_cpu]
+    return np.vstack(eval_preds)
 
 
 if __name__ == "__main__":  # noqa: C901
 
-    args = parse_args()
+    datadir = "data/processed/amazon"
+    modeldir = "models"
+    resultsdir = "results"
+    dataname = "leave_one_out_w_negative_full_valid.npz"
+    n_emb = 8
+    lr = 0.01
+    batch_size = 1024
+    epochs = 1
+    learner = "adamw"
+    topk = 4
+    n_neg = 4
+    topk = 10
+    validate_every = 1
+    save_model = False
 
-    # dirs and filenames
-    datadir = args.datadir
-    modeldir = args.modeldir
-    resultsdir = args.resultsdir
-    dataname = args.dataname
-    train_urm = args.train_urm
+    # args = parse_args()
 
-    # model params
-    n_emb = args.n_emb
+    # # dirs and filenames
+    # datadir = args.datadir
+    # modeldir = args.modeldir
+    # resultsdir = args.resultsdir
+    # dataname = args.dataname
 
-    # train params
-    batch_size = args.batch_size
-    epochs = args.epochs
-    learner = args.learner
-    lr = args.lr
-    lr_scheduler = args.lr_scheduler
-    lrs = "wlrs" if lr_scheduler else "wolrs"
+    # # model params
+    # n_emb = args.n_emb
 
-    # eval params
-    topk = args.topk
-    n_neg = args.n_neg
-    validate_every = args.validate_every
+    # # train params
+    # batch_size = args.batch_size
+    # epochs = args.epochs
+    # learner = args.learner
+    # # lr = args.lr
+    # # lr_scheduler = args.lr_scheduler
+    # # lrs = "wlrs" if lr_scheduler else "wolrs"
 
-    # save
-    save_model = args.save_model
+    # # eval params
+    # topk = args.topk
+    # n_neg = args.n_neg
+    # validate_every = args.validate_every
+
+    # # save
+    # save_model = args.save_model
 
     modelfname = (
         "GMF"
         + "_".join(["_bs", str(batch_size)])
-        + "_".join(["_lr", str(lr).replace(".", "")])
+        # + "_".join(["_lr", str(lr).replace(".", "")])
         + "_".join(["_n_emb", str(n_emb)])
         + "_".join(["_lrnr", learner])
-        + "_".join(["_lrs", lrs])
+        # + "_".join(["_lrs", lrs])
         + ".pt"
     )
     if not os.path.exists(modeldir):
@@ -267,78 +280,60 @@ if __name__ == "__main__":  # noqa: C901
     modelpath = os.path.join(modeldir, modelfname)
     resultsdfpath = os.path.join(modeldir, "results_df.p")
 
-    # --> HERE
+    # build or load train and test datasets
     dataset = np.load(os.path.join(datadir, dataname))
-    train_ratings = load_npz(os.path.join(datadir, train_urm)).todok()
-    test_ratings, negatives = dataset["test_negative"], dataset["negatives"]
-    n_users, n_items = dataset["n_users"].item(), dataset["n_items"].item()
+    train_wo_neg = pd.DataFrame(dataset["train"], columns=["user", "item", "rating"])
+    test_w_neg = pd.DataFrame(dataset["test"], columns=["user", "item", "rating"])
+    # we will treat it as a binary problem: interaction or not
+    train_wo_neg["rating"] = train_wo_neg.rating.apply(lambda x: 1 if x > 0 else x)
+    test_w_neg["rating"] = test_w_neg.rating.apply(lambda x: 1 if x > 0 else x)
+    n_users, n_items = dataset["n_users"], dataset["n_items"]
 
-    test_loader = DataLoader(dataset=test_ratings, batch_size=1000, shuffle=False)
+    # test loader for validation
+    test_loader = DataLoader(dataset=test_w_neg.values, batch_size=1000, shuffle=False)
 
+    # model definition
     model = GMF(n_users, n_items, n_emb=n_emb)
 
-    if learner.lower() == "adagrad":
-        optimizer = torch.optim.Adagrad(model.parameters(), lr=lr)
-    elif learner.lower() == "rmsprop":
-        optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, momentum=0.9)
-    elif learner.lower() == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    # set the optimizer and loss
+    if learner.lower() == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     else:
         optimizer = torch.optim.SGD(
             model.parameters(), lr=lr, momentum=0.9, nesterov=True
         )
 
-    criterion = nn.BCELoss()
-
-    training_steps = (
-        (len(train_ratings) + len(train_ratings) * n_neg) // batch_size
-    ) + 1
-    step_size = training_steps * 3  # one cycle every 6 epochs
-    cycle_momentum = True
-    if learner.lower() == "adagrad" or learner.lower() == "adam":
-        cycle_momentum = False
-    if lr_scheduler:
-        scheduler = CyclicLR(
-            optimizer,
-            step_size_up=step_size,
-            base_lr=lr / 10.0,
-            max_lr=lr,
-            cycle_momentum=cycle_momentum,
-        )
-    else:
-        scheduler = None
-
     use_cuda = torch.cuda.is_available()
     if use_cuda:
         model = model.cuda()
 
+    # --> HERE: early stop and save results and model
     best_hr, best_ndcgm, best_iter = 0, 0, 0
-    for epoch in range(1, epochs + 1):
+    for epoch in range(epochs):
         t1 = time()
-        loss = train(
+        train(
             model,
-            criterion,
             optimizer,
-            scheduler,
             epoch,
             batch_size,
             use_cuda,
-            train_ratings,
-            negatives,
+            train_wo_neg,
+            test_w_neg,
             n_items,
             n_neg,
         )
         t2 = time()
         if epoch % validate_every == 0:
-            (hr, ndcg) = evaluate(model, test_loader, use_cuda, topk)
+            res = evaluate(model, test_loader, use_cuda, topk)
+            hr = np.mean([el[0] for el in res])
+            ndcg = np.mean([el[1] for el in res])
             print(
-                "Epoch: {} {:.2f}s, LOSS = {:.4f}, HR = {:.4f}, NDCG = {:.4f}, validated in {:.2f}s".format(
-                    epoch, t2 - t1, loss, hr, ndcg, time() - t2
+                "Epoch: {} {:.2f}s,  HR = {:.4f}, NDCG = {:.4f}, validated in {:.2f}s".format(
+                    epoch, t2 - t1, hr, ndcg, time() - t2
                 )
             )
             if hr > best_hr:
-                iter_loss, best_hr, best_ndcg, best_iter, train_time = (
-                    loss,
+                best_hr, best_ndcg, best_iter, train_time = (
                     hr,
                     ndcg,
                     epoch,
@@ -355,23 +350,23 @@ if __name__ == "__main__":  # noqa: C901
     if save_model:
         print("The best GMF model is saved to {}".format(modelpath))
 
-    if save_model:
-        cols = [
-            "modelname",
-            "iter_loss",
-            "best_hr",
-            "best_ndcg",
-            "best_iter",
-            "train_time",
-        ]
-        vals = [modelfname, iter_loss, best_hr, best_ndcg, best_iter, train_time]
-        if not os.path.isfile(resultsdfpath):
-            results_df = pd.DataFrame(columns=cols)
-            experiment_df = pd.DataFrame(data=[vals], columns=cols)
-            results_df = results_df.append(experiment_df, ignore_index=True)
-            results_df.to_pickle(resultsdfpath)
-        else:
-            results_df = pd.read_pickle(resultsdfpath)
-            experiment_df = pd.DataFrame(data=[vals], columns=cols)
-            results_df = results_df.append(experiment_df, ignore_index=True)
-            results_df.to_pickle(resultsdfpath)
+    # if save_model:
+    #     cols = [
+    #         "modelname",
+    #         "iter_loss",
+    #         "best_hr",
+    #         "best_ndcg",
+    #         "best_iter",
+    #         "train_time",
+    #     ]
+    #     vals = [modelfname, iter_loss, best_hr, best_ndcg, best_iter, train_time]
+    #     if not os.path.isfile(resultsdfpath):
+    #         results_df = pd.DataFrame(columns=cols)
+    #         experiment_df = pd.DataFrame(data=[vals], columns=cols)
+    #         results_df = results_df.append(experiment_df, ignore_index=True)
+    #         results_df.to_pickle(resultsdfpath)
+    #     else:
+    #         results_df = pd.read_pickle(resultsdfpath)
+    #         experiment_df = pd.DataFrame(data=[vals], columns=cols)
+    #         results_df = results_df.append(experiment_df, ignore_index=True)
+    #         results_df.to_pickle(resultsdfpath)

@@ -11,7 +11,7 @@ from scipy.sparse import load_npz
 from sklearn.metrics import pairwise_distances
 from tqdm import tqdm
 
-from metrics import hit_ratio, ndgc_binary
+from metrics import hit_ratio, ndcg_binary
 
 PROCESSED_DATA_DIR = Path("data/processed/amazon")
 RESULTS_DIR = Path("results")
@@ -127,9 +127,9 @@ def run_experiments(dataset, strategy, k, sample=None):
         true = test_w_negatives[test_w_negatives.rating != 0].item.values
         mp_rec = mp_recs[:k]
         rec = recs[1][:k]
-        ndgc_knn.append(ndgc_binary(rec, true, k))
+        ndgc_knn.append(ndcg_binary(rec, true, k))
         hr_knn.append(hit_ratio(rec, true, k))
-        ndgc_mp.append(ndgc_binary(mp_rec, true, k))
+        ndgc_mp.append(ndcg_binary(mp_rec, true, k))
         hr_mp.append(hit_ratio(mp_rec, true, k))
 
     results["knn_cf"]["ndgc"] = np.mean(ndgc_knn)

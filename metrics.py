@@ -42,13 +42,13 @@ def hit_ratio_at_k_batch(X_pred, heldout_batch, k):
     return hr
 
 
-def ndgc_binary(rec, true, k):
+def ndcg_binary(rec, true, k):
     dcg = _dcg_binary(rec, true, k)
     idcg = _dcg_binary(true, true, k)
     return dcg / idcg
 
 
-def ndgc_score(rec, true, true_relevance, k):
+def ndcg_score(rec, true, true_relevance, k):
     dcg = _dcg_binary(rec, true, true_relevance, k)
     idcg = _dcg_binary(true, true, true_relevance, k)
     return dcg / idcg

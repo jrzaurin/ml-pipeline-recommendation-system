@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from metrics import hit_ratio, ndgc_binary
+from metrics import hit_ratio, ndcg_binary
 
 # from tqdm import tqdm
 
@@ -23,7 +23,7 @@ def get_metrics(group, k):
     df = group[1]
     true = df[df.score != 0]["item"].values
     rec = df.sort_values("preds", ascending=False)["item"].values[:k]
-    return (hit_ratio(rec, true, k), ndgc_binary(rec, true, k))
+    return (hit_ratio(rec, true, k), ndcg_binary(rec, true, k))
 
 
 def experiment_metrics(strategy, dataset_name, is_valid, binary, multiclass, recency):
