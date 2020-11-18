@@ -17,5 +17,5 @@ for _ in range(10):
     pdist = pairwise_distances(
         X[tr_idx].reshape(1, -1), X[val_idx].reshape(1, -1), metric="cosine"
     )[0]
-    out.append(np.isclose(kdist,pdist))
+    out.append(np.isclose(kdist, pdist))
 print(np.all(out))

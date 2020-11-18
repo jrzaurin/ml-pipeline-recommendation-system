@@ -1,3 +1,5 @@
+import math
+
 import bottleneck as bn
 import numpy as np
 
@@ -49,8 +51,8 @@ def ndcg_binary(rec, true, k):
 
 
 def ndcg_score(rec, true, true_relevance, k):
-    dcg = _dcg_binary(rec, true, true_relevance, k)
-    idcg = _dcg_binary(true, true, true_relevance, k)
+    dcg = _dcg_score(rec, true, true_relevance, k)
+    idcg = _dcg_score(true, true, true_relevance, k)
     return dcg / idcg
 
 
@@ -118,3 +120,17 @@ def _efficient_sort(arr, k):
     idx_part = np.argsort(-topk_part, axis=1)
     idx_topk = idx_topk_part[np.arange(batch_size)[:, np.newaxis], idx_part]
     return idx_topk
+
+
+def hit_ratio_ncf(ranklist, gtitem):
+    if gtitem in ranklist:
+        return 1
+    return 0
+
+
+def ndcg_binary_ncf(ranklist, gtitem):
+    for i in range(len(ranklist)):
+        item = ranklist[i]
+        if item == gtitem:
+            return math.log(2) / math.log(i + 2)
+    return 0

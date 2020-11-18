@@ -1,10 +1,7 @@
 import heapq
-import math
 import os
 import pickle
 from datetime import datetime
-# from functools import partial
-# from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from time import time
 
@@ -17,9 +14,9 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 
-from gmf_parser import parse_args
-
-# from metrics import hit_ratio, ndcg_binary
+from metrics import hit_ratio_ncf as hit_ratio
+from metrics import ndcg_binary_ncf as ndcg_binary
+from ncf_parsers import gmf_parse_args
 
 use_cuda = torch.cuda.is_available()
 
@@ -52,21 +49,7 @@ class GMF(nn.Module):
         return preds
 
 
-def hit_ratio_ncf(ranklist, gtitem):
-    if gtitem in ranklist:
-        return 1
-    return 0
-
-
-def ndcg_binary_ncf(ranklist, gtitem):
-    for i in range(len(ranklist)):
-        item = ranklist[i]
-        if item == gtitem:
-            return math.log(2) / math.log(i + 2)
-    return 0
-
-
-def get_metrics_ncf(items, preds, topk):
+def get_metrics(items, preds, topk):
 
     gtitem = items[0]
 
@@ -78,16 +61,9 @@ def get_metrics_ncf(items, preds, topk):
 
     map_item_score = dict(zip(items, preds))
     ranklist = heapq.nlargest(topk, map_item_score, key=map_item_score.get)
-    hr = hit_ratio_ncf(ranklist, gtitem)
-    ndcg = ndcg_binary_ncf(ranklist, gtitem)
+    hr = hit_ratio(ranklist, gtitem)
+    ndcg = ndcg_binary(ranklist, gtitem)
     return hr, ndcg
-
-
-# def get_metrics(group, k):
-#     df = group[1]
-#     true = df[df.rating != 0]["item"].values
-#     rec = df.sort_values("preds", ascending=False)["item"].values[:k]
-#     return (hit_ratio(rec, true, k), ndcg_binary(rec, true, k))
 
 
 def _sample_train_neg_instances(
@@ -173,21 +149,7 @@ def train(
     return avg_loss
 
 
-# def evaluate(model, eval_loader):
-#     model.eval()
-#     eval_preds = []
-#     with torch.no_grad():
-#         for data in tqdm(eval_loader, desc="Valid"):
-#             users, items, labels = data[:, 0], data[:, 1], data[:, 2].float()
-#             if use_cuda:
-#                 users, items, labels = users.cuda(), items.cuda(), labels.cuda()
-#             preds = model(users, items)
-#             preds_cpu = preds.squeeze(1).detach().cpu().numpy()
-#             eval_preds += [preds_cpu]
-#     return np.hstack(eval_preds)
-
-
-def evaluate_ncf(model, eval_loader):
+def evaluate(model, eval_loader, topk):
     model.eval()
     scores = []
     with torch.no_grad():
@@ -205,7 +167,7 @@ def evaluate_ncf(model, eval_loader):
             item_chunks = np.split(items_cpu, split_chuncks)
             pred_chunks = np.split(preds_cpu, split_chuncks)
             scores += [
-                get_metrics_ncf(it, pr, topk)
+                get_metrics(it, pr, topk)
                 for it, pr in zip(item_chunks, pred_chunks)
             ]
 
@@ -231,7 +193,7 @@ def early_stopping(curr_value, best_value, stop_step, patience):
 
 if __name__ == "__main__":  # noqa: C901
 
-    args = parse_args()
+    args = gmf_parse_args()
 
     DATA_DIR = Path(args.datadir)
     MODEL_DIR = Path("models")
@@ -255,9 +217,6 @@ if __name__ == "__main__":  # noqa: C901
     n_neg = args.n_neg
     eval_every = args.eval_every
     early_stop_patience = args.early_stop_patience
-
-    # save
-    save_results = args.save_results
 
     for d in [RESULTS_DIR, MODEL_DIR]:
         if not os.path.exists(d):
@@ -283,7 +242,7 @@ if __name__ == "__main__":  # noqa: C901
     if learner.lower() == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     else:
-        optimizer = torch.optim.SGD(
+        optimizer = torch.optim.SGD(  # type: ignore[assignment]
             model.parameters(), lr=lr, momentum=0.9, nesterov=True
         )
 
@@ -315,17 +274,7 @@ if __name__ == "__main__":  # noqa: C901
         )
         t2 = time()
         if epoch % eval_every == (eval_every - 1):
-            # preds = evaluate(model, eval_loader)
-            # test_w_neg["preds"] = preds
-            # user_groups = test_w_neg.groupby("user")
-
-            # with Pool(cpu_count()) as p:
-            #     res = p.map(partial(get_metrics, k=10), [g for g in user_groups])
-
-            # hr = np.mean([el[0] for el in res])
-            # ndcg = np.mean([el[1] for el in res])
-
-            hr, ndcg = evaluate_ncf(model, eval_loader)
+            hr, ndcg = evaluate(model, eval_loader, topk)
 
             early_stop_score = ndcg
             best_score, stop_step, stop = early_stopping(
@@ -345,11 +294,11 @@ if __name__ == "__main__":  # noqa: C901
             print("=" * 80)
         if stop:
             break
-        if (stop_step == 0) & (save_results):
+        if (stop_step == 0) & (args.save_results):
             best_epoch = epoch
             torch.save(model.state_dict(), MODEL_DIR / (model_name + ".pt"))
 
-    if save_results:
+    if args.save_results:
         # Save results
         results_d = {}
         results_d["args"] = args.__dict__
