@@ -115,17 +115,16 @@ if __name__ == "__main__":  # noqa: C901
             optimizer,
             mode="max",
             patience=lr_patience,
-            factor=0.5,
+            factor=0.1,
             threshold=0.001,
-            threshold_mode="rel",
+            threshold_mode="abs",
+            verbose=True,
         )
 
     best_score = -np.inf
     stop_step = 0
-    update_count = 0
     stop = False
     for epoch in range(n_epochs):
-        t1 = time()
         train(
             model,
             optimizer,
@@ -136,10 +135,16 @@ if __name__ == "__main__":  # noqa: C901
             n_items,
             n_neg,
         )
-        t2 = time()
         if epoch % eval_every == (eval_every - 1):
+            start = time()
             hr, ndcg = evaluate(model, eval_loader, topk)
-
+            print("=" * 80)
+            print(
+                "HR = {:.4f}, NDCG = {:.4f}, validated in {:.2f}s".format(
+                    hr, ndcg, time() - start
+                )
+            )
+            print("=" * 80)
             early_stop_score = ndcg
             best_score, stop_step, stop = early_stopping(
                 early_stop_score,
@@ -149,13 +154,6 @@ if __name__ == "__main__":  # noqa: C901
             )
             if lr_scheduler:
                 scheduler.step(early_stop_score)
-            print("=" * 80)
-            print(
-                "HR = {:.4f}, NDCG = {:.4f}, validated in {:.2f}s".format(
-                    hr, ndcg, time() - t2
-                )
-            )
-            print("=" * 80)
         if stop:
             break
         if (stop_step == 0) & (args.save_results):

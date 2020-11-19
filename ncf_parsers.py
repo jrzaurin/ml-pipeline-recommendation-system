@@ -14,8 +14,8 @@ def gmf_parse_args():
         default="leave_one_out_w_negative_full_valid.npz",
         help="npz file with dataset",
     )
-    parser.add_argument("--n_epochs", type=int, default=20, help="number of epochs.")
-    parser.add_argument("--batch_size", type=int, default=256, help="batch size.")
+    parser.add_argument("--n_epochs", type=int, default=30, help="number of epochs.")
+    parser.add_argument("--batch_size", type=int, default=1024, help="batch size.")
     parser.add_argument("--n_emb", type=int, default=8, help="embedding size.")
     parser.add_argument(
         "--lr", type=float, default=0.01, help="if lr_scheduler this will be max_lr"
@@ -34,11 +34,12 @@ def gmf_parse_args():
     parser.add_argument(
         "--lr_patience",
         type=int,
-        default=4,
-        help="Patience for ReduceLROnPlateau lr_scheduler before decreasing lr",
+        default=1,
+        help="Patience for ReduceLROnPlateau lr_scheduler before decreasing lr, \
+        By default we eval_every 2 epochs",
     )
     parser.add_argument(
-        "--eval_every", type=int, default=1, help="Evaluate every N epochs"
+        "--eval_every", type=int, default=2, help="Evaluate every N epochs"
     )
     parser.add_argument(
         "--n_neg",
@@ -55,8 +56,8 @@ def gmf_parse_args():
     parser.add_argument(
         "--early_stop_patience",
         type=int,
-        default=5,
-        help="Patience for early stopping",
+        default=4,
+        help="Patience for early stopping. By default we eval_every 2 epochs",
     )
     parser.add_argument(
         "--save_results", action="store_true", help="Save model and results"
@@ -78,19 +79,19 @@ def mlp_parse_args():
         default="leave_one_out_w_negative_full_valid.npz",
         help="npz file with dataset",
     )
-    parser.add_argument("--n_epochs", type=int, default=20, help="number of epochs.")
-    parser.add_argument("--batch_size", type=int, default=256, help="batch size.")
+    parser.add_argument("--n_epochs", type=int, default=30, help="number of epochs.")
+    parser.add_argument("--batch_size", type=int, default=1024, help="batch size.")
     parser.add_argument(
         "--layers",
         type=str,
-        default="[32,16,8]",
+        default="[32, 16, 8]",
         help="layer architecture. The first elements is used for the embedding \
         layers and equals n_emb*2",
     )
     parser.add_argument(
         "--dropouts",
         type=str,
-        default="[0,0,0]",
+        default="[0., 0.]",
         help="dropout per dense layer. len(dropouts) = len(layers)-1",
     )
     parser.add_argument("--l2reg", type=float, default=0.0, help="l2 regularization")
@@ -111,11 +112,12 @@ def mlp_parse_args():
     parser.add_argument(
         "--lr_patience",
         type=int,
-        default=4,
-        help="Patience for ReduceLROnPlateau lr_scheduler before decreasing lr",
+        default=1,
+        help="Patience for ReduceLROnPlateau lr_scheduler before decreasing lr, \
+        By default we eval_every 2 epochs",
     )
     parser.add_argument(
-        "--eval_every", type=int, default=1, help="Evaluate every N epochs"
+        "--eval_every", type=int, default=2, help="Evaluate every N epochs"
     )
     parser.add_argument(
         "--n_neg",
@@ -132,8 +134,8 @@ def mlp_parse_args():
     parser.add_argument(
         "--early_stop_patience",
         type=int,
-        default=5,
-        help="Patience for early stopping",
+        default=4,
+        help="Patience for early stopping. By default we eval_every 2 epochs",
     )
     parser.add_argument(
         "--save_results", action="store_true", help="Save model and results"
@@ -163,21 +165,21 @@ def ncf_parse_args():
     parser.add_argument(
         "--layers",
         type=str,
-        default="[32,16,8]",
+        default="[32, 16, 8]",
         help="layer architecture. The first elements is used for the embedding \
         layers for the MLP part and equals n_emb*2",
     )
     parser.add_argument(
         "--dropouts",
         type=str,
-        default="[0.,0.,0.]",
+        default="[0., 0.]",
         help="dropout per dense layer. len(dropouts) = len(layers)-1",
     )
 
     # train/eval parameter
-    parser.add_argument("--n_epochs", type=int, default=20, help="number of epochs.")
-    parser.add_argument("--batch_size", type=int, default=256, help="batch size.")
-    parser.add_argument("--lr", type=float, default=0.001, help="learning rate.")
+    parser.add_argument("--n_epochs", type=int, default=30, help="number of epochs.")
+    parser.add_argument("--batch_size", type=int, default=1024, help="batch size.")
+    parser.add_argument("--lr", type=float, default=0.01, help="learning rate.")
     parser.add_argument(
         "--learner",
         type=str,
@@ -193,11 +195,12 @@ def ncf_parse_args():
     parser.add_argument(
         "--lr_patience",
         type=int,
-        default=4,
-        help="Patience for ReduceLROnPlateau lr_scheduler before decreasing lr",
+        default=1,
+        help="Patience for ReduceLROnPlateau lr_scheduler before decreasing lr, \
+        By default we eval_every 2 epochs so lr_patience of 2 implies 4 epochs",
     )
     parser.add_argument(
-        "--eval_every", type=int, default=1, help="Evaluate every N epochs"
+        "--eval_every", type=int, default=2, help="Evaluate every N epochs"
     )
     parser.add_argument(
         "--n_neg",
@@ -214,8 +217,8 @@ def ncf_parse_args():
     parser.add_argument(
         "--early_stop_patience",
         type=int,
-        default=5,
-        help="Patience for early stopping",
+        default=4,
+        help="Patience for early stopping. By default we eval_every 2 epochs",
     )
 
     # Pretrained model names
