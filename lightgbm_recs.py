@@ -3,6 +3,7 @@ import pickle
 from pathlib import Path
 
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 
 # from time import time
@@ -136,7 +137,7 @@ def run_lightgbm(
     gc.collect()
 
     if is_valid:
-        n_estimators = 1000
+        n_estimators = 500
     else:
         n_estimators = pickle.load(
             open(PROCESSED_DATA_DIR / load_model, "rb")

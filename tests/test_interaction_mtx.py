@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import load_npz
 
-PROCESSED_DATA_DIR = Path("data/processed/amazon")
+PROCESSED_DATA_DIR = Path("../data/processed/amazon")
 IS_VALID = True
-STRATEGY = "leave_n_out"
+STRATEGY = "leave_one_out"
 
 
 def test_urm(train_df, data, urm, user_idx, item_idx):
@@ -27,7 +27,10 @@ def test_urm(train_df, data, urm, user_idx, item_idx):
 
 if __name__ == "__main__":
 
-    for dataset in ["full", "5core"]:
+    # datasets = ["full", "5core"]
+    datasets = ["full"]
+
+    for dataset in datasets:
         print(
             "INFO: testing that the interactions matrix for the {} dataset was built correctly".format(
                 dataset

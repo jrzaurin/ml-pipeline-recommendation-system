@@ -7,7 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from label_encoder import LabelEncoder
-from split_data_utils import compute_recency_factor
+from split_data import compute_recency_factor
 
 pd.options.display.max_columns = 100
 pd.options.display.max_rows = 100
@@ -146,10 +146,15 @@ def load_item_feat(item_idx, n_topics=10, n_umap=5):
     return item_feat
 
 
-def load_user_feat(user_idx):
+def load_user_feat(user_idx, strategy, dataset_name, is_valid):
+
+    if is_valid:
+        user_feat_fname = "_".join(["user_features", strategy, dataset_name, "valid.f"])
+    else:
+        user_feat_fname = "_".join(["user_features", strategy, dataset_name, "test.f"])
 
     # USER FEATURES
-    user_feat = pd.read_feather(PROCESSED_DATA_DIR / "train_user_feat.f")
+    user_feat = pd.read_feather(PROCESSED_DATA_DIR / user_feat_fname)
     user_feat = nan_with_unknown_imputer(
         user_feat,
         columns=[
@@ -212,8 +217,12 @@ def sample_negative_train(
 
     if is_valid:
         data_fname = "_".join([strategy, "w_negative", dataset_name, "valid.npz"])
+        item_pop_fname = "_".join(
+            ["item_popularity", strategy, dataset_name, "valid.f"]
+        )
     else:
         data_fname = "_".join([strategy, "w_negative", dataset_name, "test.npz"])
+        item_pop_fname = "_".join(["item_popularity", strategy, dataset_name, "test.f"])
 
     train_test_set = np.load(PROCESSED_DATA_DIR / data_fname)
 
@@ -253,6 +262,9 @@ def sample_negative_train(
     test_w_neg = test_w_neg[test_w_neg.item.isin(item_feat.item)]
 
     # merge interactions with user and item features
+    item_pop = pd.read_feather(PROCESSED_DATA_DIR / item_pop_fname)
+    item_pop["item"] = item_pop.item.map(item_idx)
+    item_feat = pd.merge(item_feat, item_pop, on="item").reset_index(drop=True)
     train_w_neg = pd.merge(
         pd.merge(train_w_neg, item_feat, on="item"), user_feat, on="user"
     )
@@ -337,7 +349,7 @@ if __name__ == "__main__":
 
         item_feat = load_item_feat(item_idx)
 
-        user_feat = load_user_feat(user_idx)
+        user_feat = load_user_feat(user_idx, strategy, dataset_name, is_valid)
 
         train_w_neg, test_w_neg = sample_negative_train(
             strategy,

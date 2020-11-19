@@ -5,8 +5,8 @@ import pandas as pd
 from scipy.sparse import lil_matrix, save_npz
 
 PROCESSED_DATA_DIR = Path("data/processed/amazon")
-IS_VALID = True
-STRATEGY = "leave_n_out"
+IS_VALID = False
+STRATEGY = "leave_one_out"
 
 
 def built_interaction_mtx(interactions, output_fname):
@@ -40,7 +40,10 @@ def built_interaction_mtx(interactions, output_fname):
 
 if __name__ == "__main__":
 
-    for dataset in ["full", "5core"]:
+    # datasets = ["full", "5core"]
+    datasets = ["full"]
+
+    for dataset in datasets:
         print("INFO: building interactions matrix for the {} dataset.".format(dataset))
 
         # 1) URM = user ratings matrix 2) for now leave_one_out always implies

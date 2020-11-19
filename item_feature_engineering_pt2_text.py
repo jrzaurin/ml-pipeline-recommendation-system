@@ -122,7 +122,7 @@ def preprocessing(t):
 
 if __name__ == "__main__":
 
-    meta = pd.read_pickle(PROCESSED_DATA_DIR / "meta_movies_and_tv_processed.p")
+    meta = pd.read_pickle(PROCESSED_DATA_DIR / "item_features.p")
 
     descriptions = meta.description.tolist()
     descriptions_unlisted = []

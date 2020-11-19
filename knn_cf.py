@@ -18,12 +18,12 @@ RESULTS_DIR = Path("results")
 IS_VALID = False
 
 
-def knn_item_cf_recs(te_group, tr_groups, urm, agg_method="mean"):
+def knn_item_cf_recs(te_lookup, tr_lookup, urm, agg_method="mean"):
 
     # get train and valid interactions
-    user = te_group[0]
-    te_items = te_group[1].item.values
-    tr_items = tr_groups.get_group(user).item.values
+    user = te_lookup[0]
+    te_items = te_lookup[1]
+    tr_items = tr_lookup[user]
 
     # compute cosine distance between training and the 100 val itens (1 pos +
     # 99 neg)
@@ -38,7 +38,7 @@ def knn_item_cf_recs(te_group, tr_groups, urm, agg_method="mean"):
     else:
         print("Only 'min' and 'mean' are allowed as 'agg_method'")
 
-    recs = te_items[idx]
+    recs = np.array(te_items)[idx]
     return (user, recs)
 
 
@@ -76,31 +76,45 @@ def get_recommendations(
         )
         urm = load_npz(PROCESSED_DATA_DIR / URM_fname)
 
-    # extract most popular items
+    # extract most popular items. MP items will also be ranked based on
+    # similarity to the training items for each user
     most_popular_items = train.item.value_counts().reset_index()
     most_popular_items.columns = ["item", "counts"]
     mp_recs = most_popular_items.item.values[:100]
 
     if sample is not None:
         test_users_sample = test.user.sample(sample, random_state=1).unique()
-        test_groups = test[test.user.isin(test_users_sample)].groupby("user")
-        train_groups = train[train.user.isin(test_users_sample)].groupby("user")
-    else:
-        train_groups = train.groupby("user")
-        test_groups = test.groupby("user")
+        test_lookup = (
+            test[test.user.isin(test_users_sample)].groupby("user")["item"].apply(list)
+        )
+        train_lookup = (
+            train[train.user.isin(test_users_sample)]
+            .groupby("user")["item"]
+            .apply(list)
+        )
+        test_pos_lookup = (
+            test[(test.user.isin(test_users_sample)) & (test.rating != 0)]
+            .groupby("user")["item"]
+            .apply(list)
+        )
 
-    print("number of users used for this experiment: {}.".format(len(test_groups)))
+    else:
+        train_lookup = train.groupby("user")["item"].apply(list)
+        test_lookup = test.groupby("user")["item"].apply(list)
+        test_pos_lookup = test[test.rating != 0].groupby("user")["item"].apply(list)
+
+    print("number of users used for this experiment: {}.".format(len(test_lookup)))
     print("running knn cf...")
     start = time()
     with Pool(cpu_count()) as p:
         knn_recs = p.map(
-            partial(knn_item_cf_recs, tr_groups=train_groups, urm=urm),
-            [gr for gr in test_groups],
+            partial(knn_item_cf_recs, tr_lookup=train_lookup, urm=urm),
+            [tp for tp in test_lookup.items()],
         )
     end = time() - start
     print("knn cf run in {} sec".format(round(end, 3)))
 
-    return test, mp_recs, knn_recs
+    return test_pos_lookup, mp_recs, knn_recs
 
 
 def run_experiments(dataset, strategy, k, sample=None):
@@ -114,8 +128,7 @@ def run_experiments(dataset, strategy, k, sample=None):
             ["knn_item_cf_results", strategy, dataset, "test", "k", str(k) + ".p"]
         )
 
-    test, mp_recs, knn_recs = get_recommendations(dataset, strategy, sample=sample)
-    test_groups = test.groupby("user")
+    test_pos, mp_recs, knn_recs = get_recommendations(dataset, strategy, sample=sample)
     results: dict = {}
     results["knn_cf"] = {}
     results["most_popular"] = {}
@@ -123,8 +136,7 @@ def run_experiments(dataset, strategy, k, sample=None):
     ndgc_mp, hr_mp = [], []
 
     for recs in tqdm(knn_recs):
-        test_w_negatives = test_groups.get_group(recs[0])
-        true = test_w_negatives[test_w_negatives.rating != 0].item.values
+        true = test_pos[recs[0]]
         mp_rec = mp_recs[:k]
         rec = recs[1][:k]
         ndgc_knn.append(ndcg_binary(rec, true, k))
@@ -145,13 +157,13 @@ if __name__ == "__main__":
     run_experiments(dataset="full", strategy="leave_one_out", k=10)
     run_experiments(dataset="full", strategy="leave_one_out", k=20)
     run_experiments(dataset="full", strategy="leave_one_out", k=50)
-    run_experiments(dataset="full", strategy="leave_n_out", k=10)
-    run_experiments(dataset="full", strategy="leave_n_out", k=20)
-    run_experiments(dataset="full", strategy="leave_n_out", k=50)
+    # run_experiments(dataset="full", strategy="leave_n_out", k=10)
+    # run_experiments(dataset="full", strategy="leave_n_out", k=20)
+    # run_experiments(dataset="full", strategy="leave_n_out", k=50)
 
-    run_experiments(dataset="5core", strategy="leave_one_out", k=10)
-    run_experiments(dataset="5core", strategy="leave_one_out", k=20)
-    run_experiments(dataset="5core", strategy="leave_one_out", k=50)
-    run_experiments(dataset="5core", strategy="leave_n_out", k=10)
-    run_experiments(dataset="5core", strategy="leave_n_out", k=20)
-    run_experiments(dataset="5core", strategy="leave_n_out", k=50)
+    # run_experiments(dataset="5core", strategy="leave_one_out", k=10)
+    # run_experiments(dataset="5core", strategy="leave_one_out", k=20)
+    # run_experiments(dataset="5core", strategy="leave_one_out", k=50)
+    # run_experiments(dataset="5core", strategy="leave_n_out", k=10)
+    # run_experiments(dataset="5core", strategy="leave_n_out", k=20)
+    # run_experiments(dataset="5core", strategy="leave_n_out", k=50)

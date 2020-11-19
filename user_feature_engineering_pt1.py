@@ -254,6 +254,14 @@ def full_process(strategy, dataset_name, is_valid):
     t_diff = time_diff_parallel(train)
     mcd = most_common_days_parallel(train)
 
+    item_pop = train[["user", "item"]].item.value_counts().reset_index()
+    item_pop.columns = ["item", "item_pop"]
+    if is_valid:
+        item_pop_fname = "_".join(["item_popularity", strategy, dataset_name, "valid.f"])
+    else:
+        item_pop_fname = "_".join(["item_popularity", strategy, dataset_name, "test.f"])
+    item_pop.to_feather(PROCESSED_DATA_DIR / item_pop_fname)
+
     item_feat, item_lda, item_umap = load_item_features()
     top_lda = top_topics_parallel(train, item_lda)
     top_umap = top_umap_parallel(train, item_umap)
@@ -286,12 +294,12 @@ if __name__ == "__main__":
     combinations = [
         ("leave_one_out", "full", True),
         ("leave_one_out", "full", False),
-        ("leave_one_out", "5core", True),
-        ("leave_one_out", "5core", False),
-        ("leave_n_out", "full", True),
-        ("leave_n_out", "full", False),
-        ("leave_n_out", "5core", True),
-        ("leave_n_out", "5core", False),
+        # ("leave_one_out", "5core", True),
+        # ("leave_one_out", "5core", False),
+        # ("leave_n_out", "full", True),
+        # ("leave_n_out", "full", False),
+        # ("leave_n_out", "5core", True),
+        # ("leave_n_out", "5core", False),
     ]
 
     for strategy, dataset_name, is_valid in combinations:

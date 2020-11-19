@@ -299,7 +299,10 @@ def sample_negative_test(train, test, n_neg, strategy, dataset_name, is_valid):
 
 if __name__ == "__main__":
 
-    for dataset in ["full", "5core"]:
+    # datasets = ["full", "5core"]
+    datasets = ["full"]
+
+    for dataset in datasets:
         if dataset == "full":
             print("INFO: splitting full dataset...")
             df = pd.read_feather(RAW_DATA_DIR / "Movies_and_TV.f")
@@ -315,6 +318,17 @@ if __name__ == "__main__":
 
         df_filter = filter_users_and_items(
             df_recent, min_reviews_per_user=5, min_reviews_per_item=1
+        )
+
+        print(
+            "{} users out of {} interacted more than 'min_reviews_per_user' times".format(
+                df_filter.user.nunique(), df_recent.user.nunique()
+            )
+        )
+        print(
+            "{} items out of {} interacted remain in the dataset".format(
+                df_filter.item.nunique(), df_recent.item.nunique()
+            )
         )
 
         # standard time train/valid/test split
@@ -343,25 +357,25 @@ if __name__ == "__main__":
             is_valid=False,
         )
 
-        # leave N out train/valid/test split
-        train, valid, test = leave_n_out_train_test_split(
-            df_filter, dataset_name=dataset
-        )
-        sample_negative_test(
-            train,
-            valid,
-            n_neg=99,
-            strategy="leave_n_out",
-            dataset_name=dataset,
-            is_valid=True,
-        )
-        sample_negative_test(
-            pd.concat([train, valid])
-            .sort_values("user", ascending=True)
-            .reset_index(drop=True),
-            test,
-            n_neg=99,
-            strategy="leave_n_out",
-            dataset_name=dataset,
-            is_valid=False,
-        )
+        # # leave N out train/valid/test split
+        # train, valid, test = leave_n_out_train_test_split(
+        #     df_filter, dataset_name=dataset
+        # )
+        # sample_negative_test(
+        #     train,
+        #     valid,
+        #     n_neg=99,
+        #     strategy="leave_n_out",
+        #     dataset_name=dataset,
+        #     is_valid=True,
+        # )
+        # sample_negative_test(
+        #     pd.concat([train, valid])
+        #     .sort_values("user", ascending=True)
+        #     .reset_index(drop=True),
+        #     test,
+        #     n_neg=99,
+        #     strategy="leave_n_out",
+        #     dataset_name=dataset,
+        #     is_valid=False,
+        # )

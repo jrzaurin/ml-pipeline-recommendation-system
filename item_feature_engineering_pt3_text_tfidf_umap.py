@@ -28,7 +28,7 @@ if __name__ == "__main__":
 
     X = vectorizer.fit_transform(item_desc)
 
-    for n in [2, 5, 10, 20]:
+    for n in [2, 5, 10]:
 
         print("INFO: running umap with {} components".format(n))
 
