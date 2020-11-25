@@ -1,4 +1,4 @@
-# ml-pipeline-recommendation-system
+# ml-prod-recsys
 
 ## System design
 
