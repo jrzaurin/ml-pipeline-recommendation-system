@@ -56,7 +56,7 @@ def gmf_parse_args():
     parser.add_argument(
         "--early_stop_patience",
         type=int,
-        default=4,
+        default=3,
         help="Patience for early stopping. By default we eval_every 2 epochs",
     )
     parser.add_argument(
@@ -134,7 +134,7 @@ def mlp_parse_args():
     parser.add_argument(
         "--early_stop_patience",
         type=int,
-        default=4,
+        default=3,
         help="Patience for early stopping. By default we eval_every 2 epochs",
     )
     parser.add_argument(
@@ -217,7 +217,7 @@ def ncf_parse_args():
     parser.add_argument(
         "--early_stop_patience",
         type=int,
-        default=4,
+        default=3,
         help="Patience for early stopping. By default we eval_every 2 epochs",
     )
 

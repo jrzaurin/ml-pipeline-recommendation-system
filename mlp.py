@@ -122,6 +122,7 @@ if __name__ == "__main__":  # noqa: C901
         )
 
     best_score = -np.inf
+    best_ndcg, best_hr = 0, 0
     stop_step = 0
     stop = False
     for epoch in range(n_epochs):
@@ -158,6 +159,11 @@ if __name__ == "__main__":  # noqa: C901
             break
         if (stop_step == 0) & (args.save_results):
             best_epoch = epoch
+            try:
+                if ndcg > best_ndcg:
+                    best_ndcg, best_hr = ndcg, hr
+            except NameError:
+                continue
             torch.save(model.state_dict(), MODEL_DIR / (model_name + ".pt"))
 
     if args.save_results:
@@ -165,6 +171,6 @@ if __name__ == "__main__":  # noqa: C901
         results_d = {}
         results_d["args"] = args.__dict__
         results_d["best_epoch"] = best_epoch
-        results_d["ndcg"] = ndcg
-        results_d["hr"] = hr
+        results_d["ndcg"] = best_ndcg
+        results_d["hr"] = best_hr
         pickle.dump(results_d, open(str(RESULTS_DIR / (model_name + ".p")), "wb"))
