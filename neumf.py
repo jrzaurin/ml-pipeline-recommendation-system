@@ -142,9 +142,9 @@ if __name__ == "__main__":  # noqa: C901
     model = NeuMF(n_users, n_items, n_emb, layers, dropouts)
     if os.path.isfile(mf_pretrain) and os.path.isfile(mlp_pretrain):
         gmf_model = GMF(n_users, n_items, n_emb)
-        gmf_model.load_state_dict(torch.load(mf_pretrain))
+        gmf_model.load_state_dict(torch.load(MODEL_DIR / mf_pretrain))
         mlp_model = MLP(n_users, n_items, layers, dropouts)
-        mlp_model.load_state_dict(torch.load(mlp_pretrain))
+        mlp_model.load_state_dict(torch.load(MODEL_DIR / mlp_pretrain))
         model = load_pretrain_model(model, gmf_model, mlp_model)
         print(
             "Load pretrained GMF {} and MLP {} models done. ".format(
@@ -179,7 +179,9 @@ if __name__ == "__main__":  # noqa: C901
             verbose=True,
         )
 
+    import pdb; pdb.set_trace()  # breakpoint ba8be9a3 //
     best_score = -np.inf
+    best_ndcg, best_hr = 0, 0
     stop_step = 0
     stop = False
     for epoch in range(n_epochs):
@@ -216,6 +218,11 @@ if __name__ == "__main__":  # noqa: C901
             break
         if (stop_step == 0) & (args.save_results):
             best_epoch = epoch
+            try:
+                if ndcg > best_ndcg:
+                    best_ndcg, best_hr = ndcg, hr
+            except NameError:
+                continue
             torch.save(model.state_dict(), MODEL_DIR / (model_name + ".pt"))
 
     if args.save_results:
@@ -223,6 +230,6 @@ if __name__ == "__main__":  # noqa: C901
         results_d = {}
         results_d["args"] = args.__dict__
         results_d["best_epoch"] = best_epoch
-        results_d["ndcg"] = ndcg
-        results_d["hr"] = hr
+        results_d["ndcg"] = best_ndcg
+        results_d["hr"] = best_hr
         pickle.dump(results_d, open(str(RESULTS_DIR / (model_name + ".p")), "wb"))

@@ -21,6 +21,11 @@ def gmf_parse_args():
         "--lr", type=float, default=0.01, help="if lr_scheduler this will be max_lr"
     )
     parser.add_argument(
+        "--concat",
+        action="store_true",
+        help="if true concatenate instead of multiply embeddings",
+    )
+    parser.add_argument(
         "--learner",
         type=str,
         default="adamw",
@@ -224,8 +229,7 @@ def ncf_parse_args():
     # Pretrained model names
     parser.add_argument(
         "--freeze",
-        type=int,
-        default=0,
+        action="store_true",
         help="freeze all but the last output layer where \
         weights are combined",
     )

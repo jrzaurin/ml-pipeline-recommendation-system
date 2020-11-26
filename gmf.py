@@ -22,16 +22,20 @@ use_cuda = torch.cuda.is_available()
 
 
 class GMF(nn.Module):
-    def __init__(self, n_user, n_item, n_emb=8):
+    def __init__(self, n_user, n_item, n_emb=8, concat=False):
         super(GMF, self).__init__()
 
         self.n_emb = n_emb
         self.n_user = n_user
         self.n_item = n_item
+        self.concat = concat
 
         self.embeddings_user = nn.Embedding(n_user, n_emb)
         self.embeddings_item = nn.Embedding(n_item, n_emb)
-        self.out = nn.Linear(in_features=n_emb, out_features=1)
+        if self.concat:
+            self.linear = nn.Linear(in_features=n_emb * 2, out_features=1)
+        else:
+            self.linear = nn.Linear(in_features=n_emb, out_features=1)
 
         for m in self.modules():
             if isinstance(m, nn.Embedding):
@@ -43,8 +47,13 @@ class GMF(nn.Module):
 
         user_emb = self.embeddings_user(users)
         item_emb = self.embeddings_item(items)
-        prod = user_emb * item_emb
-        preds = torch.sigmoid(self.out(prod))
+
+        if self.concat:
+            out = torch.cat([user_emb, item_emb], axis=1)
+        else:
+            out = user_emb * item_emb
+
+        preds = torch.sigmoid(self.linear(out))
 
         return preds
 
@@ -202,6 +211,7 @@ if __name__ == "__main__":  # noqa: C901
 
     # model params
     n_emb = args.n_emb
+    concat = args.concat
 
     # train params
     batch_size = args.batch_size
@@ -234,7 +244,7 @@ if __name__ == "__main__":  # noqa: C901
     eval_loader = DataLoader(dataset=test_w_neg.values, batch_size=1000, shuffle=False)
 
     # model definition
-    model = GMF(n_users, n_items, n_emb=n_emb)
+    model = GMF(n_users, n_items, n_emb=n_emb, concat=concat)
     if use_cuda:
         model = model.cuda()
 
